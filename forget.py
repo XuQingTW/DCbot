@@ -310,7 +310,7 @@ def save_json(data,a=True):
 
 async def playing_music(ctx, vc):
     slist = voice_clients[ctx.guild.id]["list"]
-    if voice_clients[ctx.guild.id]["song"] == len(slist):#如果播完
+    if voice_clients[ctx.guild.id]["song"] == len(slist) or voice_clients[ctx.guild.id]["list"] == []:#如果播完
         if voice_clients[ctx.guild.id]["loop"]:
             if voice_clients[ctx.guild.id]["random"]:
                 random.shuffle(slist)
@@ -429,11 +429,11 @@ async def on_ready():
 async def on_voice_state_update(member, before, after):
     if member.guild.id in voice_clients:
         if not before.channel is None and after.channel is None:
-            asyncio.sleep(180)
+            await asyncio.sleep(180)
             if len(before.channel.members) == 1:
                 if voice_clients[member.guild.id]["vc"].is_playing():
                     voice_clients[member.guild.id]["vc"].stop()
-                voice_clients[member.guild.id]["vc"].disconnect()
+                await voice_clients[member.guild.id]["vc"].disconnect()
                 del voice_clients[member.guild.id]
 #    if member.guild.id in voice_clients:
 #        if member.id == bot.user.id and voice_clients[member.guild.id]["reconnect"]:
