@@ -143,6 +143,11 @@ async def loop(ctx,vc,set):
         voice_clients[ctx.guild.id]["loop"] = False
         await ctx.send("已關閉重複播放")
     elif set == "on":
+        print(ctx.author.id)
+        if ctx.author.id == 414971247944794112:
+            voice_clients[ctx.guild.id]["loop"] = False
+            await ctx.send("已關閉重複播放")
+            return
         voice_clients[ctx.guild.id]["loop"] = True
         await ctx.send("已開啟重複播放")
     elif set == None:
