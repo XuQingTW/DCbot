@@ -292,6 +292,43 @@ play_command = {
     "f":fix
 }
 #####################################################################################################################################
+@bot.command()
+async def list(ctx,command,set:str=None,url:str=None):
+    if command in list_command:
+        await list_command[command](ctx,command,set)
+    else:
+        await ctx.send("輸入錯誤")
+async def list_play(ctx,name,url):
+    if name in data_num["music_list"][ctx.auther.id]:
+        await play(ctx,"y",data_num["music_list"][ctx.auther.id][name])
+    else:
+        await ctx.send("輸入錯誤")
+async def list_create_list(ctx,name,url):
+    try:
+        if "youtube.com/playlist?list=" in url:
+            with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
+                info = ydl.extract_info(url, download=False)
+                data_num["music_list"][ctx.auther.id][name] = []
+                for i in info["entries"]:
+                    if i != None:
+                        data_num["music_list"][ctx.auther.id][name].append([1,i["url"]])
+                await ctx.send("創建播放清單完成")
+    except:
+        await ctx.send("發生錯誤,也有可能是你沒有把歌單設定成非公開或公開")
+async def list_list(ctx,name,url):
+    if ctx.auther.id in data_num["music_list"]:
+        if data_num["music_list"][ctx.auther.id] != {}:
+            out = "這是您的列表"
+            for i in data_num["music_list"][ctx.auther.id]:
+                out += "\n" + i
+            await ctx.send(out)
+list_command = {
+    "play":list_play,
+    "p":list_play,
+    "create":list_create_list,
+    "c":list_create_list
+}    
+#####################################################################################################################################
 #function
 def scan_music_files(directory):
     music_extensions = ['.m4a', '.mp3', '.wav', '.flac', '.aac', '.ogg']
@@ -316,7 +353,7 @@ def save_json(data,a=True):
 async def playing_music(ctx, vc):
     slist = voice_clients[ctx.guild.id]["list"]
     if voice_clients[ctx.guild.id]["song"] == len(slist) or voice_clients[ctx.guild.id]["list"] == []:#如果播完
-        if voice_clients[ctx.guild.id]["loop"]:
+        if voice_clients[ctx.guild.id]["loop"] and voice_clients[ctx.guild.id]["list"] != []:
             if voice_clients[ctx.guild.id]["random"]:
                 random.shuffle(slist)
             voice_clients[ctx.guild.id]["song"] = 0
@@ -432,8 +469,7 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if member.guild.id in voice_clients:
-        if not before.channel is None and after.channel is None:
+    if member.guild.id in voice_clients and not before.channel is None and after.channel is None:
             await asyncio.sleep(180)
             if len(before.channel.members) == 1:
                 if voice_clients[member.guild.id]["vc"].is_playing():
