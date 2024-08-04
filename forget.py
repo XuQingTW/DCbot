@@ -458,7 +458,7 @@ async def owner(ctx,msg):
 async def on_ready():
     global f
     print('目前登入身份：',bot.user)
-    game = discord.Game('成為白癡打工仔吧')
+    game = discord.Game("Trust me, i'm an engineer !")
     #discord.Status.<狀態>，可以是online,offline,idle,dnd,invisible
     await bot.change_presence(status=discord.Status.online, activity=game)
     await bot.wait_until_ready()
