@@ -29,10 +29,10 @@ f = True
 with open('music.json','r') as file:
     data = json.load(file)
 #open file music.json
-with open('orange.json','r') as file:
-    data_orange = json.load(file)
 with open('data.json','r') as file:
     data_num = json.load(file)
+with open("pwd" , "r") as file:
+    pwd = json.load(file)
 #open
 intents = discord.Intents.default()
 intents.members = True
@@ -44,7 +44,7 @@ bot = commands.Bot(command_prefix='!',intents = intents)
 bot.remove_command('help')
 voice_clients = {}
 directory_to_scan = r"D:\家龢用\音樂"
-directory_orange = r"D:\家龢用\音樂\100"
+directory_steam = r"D:\SteamLibrary\steamapps\music"
 
 warning_send = bot.get_channel(1233692654210912389)
 
@@ -82,6 +82,7 @@ ffmpeg_options = {
 #####################################################################################################################################
 
 async def warning():
+    """地震報告通知，就只是單純的大型json解碼而已，沒需要改吧"""
     global bot
     send = 1224902159200686110
     channel = bot.get_channel(send)
@@ -114,17 +115,18 @@ async def warning():
 #play command
 
 async def set_random(ctx,vc,set):
+    """隨機撥放設置"""
     if set == "off":
             voice_clients[ctx.guild.id]["random"] = False
             await ctx.send("已關閉隨機播放")
     elif set == "on":
         voice_clients[ctx.guild.id]["random"] = True
-        if vc.is_playing():#如果正在播放
+        if vc.is_playing():#如果正在播放，取得目前索引並擷取尚未撥放的歌單
             a = voice_clients[ctx.guild.id]["list"]
             number = voice_clients[ctx.guild.id]["song"]
             a = a[number:]
-            random.shuffle(a)
-            for i in range(len(voice_clients[ctx.guild.id]["list"])):#將下一首開始的順序換成隨機
+            random.shuffle(a)#打亂歌單
+            for i in range(len(voice_clients[ctx.guild.id]["list"])):#索引後的歌單被隨機化歌單覆蓋
                 if i < number:
                     pass
                 else:
@@ -139,6 +141,7 @@ async def set_random(ctx,vc,set):
         await ctx.send("輸入錯誤(on or off)")
                 
 async def loop(ctx,vc,set):
+    """重複播放音樂設置"""
     if set == "off":
         voice_clients[ctx.guild.id]["loop"] = False
         await ctx.send("已關閉重複播放")
@@ -160,7 +163,8 @@ async def loop(ctx,vc,set):
 
 
 async def youtube(ctx,vc,url):
-    if set == None:
+    """撥放網路上的音樂"""
+    if url == None:
         await ctx.send("輸入錯誤")
         return
     #如果url是youtube的直播，直接播放
@@ -195,6 +199,7 @@ async def youtube(ctx,vc,url):
         await playing_music(ctx,vc)
     
 async def touhou(ctx,vc,msg):
+    """撥放冰之勇者的音樂"""
     music = scan_music_files(r"D:\SteamLibrary\steamapps\common\东方冰之勇者记 ~ Touhou Hero of Ice Fairy\DLC - Supporter Pack\~ 原声集 - OST ~")
     if voice_clients[ctx.guild.id]["random"]:
         random.shuffle(music)
@@ -204,7 +209,8 @@ async def touhou(ctx,vc,msg):
         await ctx.send("已加入播放清單，等待播放")
     else:
         await playing_music(ctx,vc)
-async def next(ctx,vc,set):#
+async def next(ctx,vc,set):
+    """下三首歌的名稱"""
     if len(voice_clients[ctx.guild.id]["list"]) == 0:
         await ctx.send("播放清單為空")
         return
@@ -229,6 +235,7 @@ async def next(ctx,vc,set):#
         str += "```" 
         await ctx.send(str)
 async def defult(ctx,vc,set):
+    """預設歌單"""
     a = data
     if voice_clients[ctx.guild.id]["random"]:
         random.shuffle(a)
@@ -239,19 +246,10 @@ async def defult(ctx,vc,set):
         await ctx.send("已加入播放清單，等待播放")
     else:
         await playing_music(ctx,vc)
-async def orange(ctx,vc,set):
-    a = data_orange
-    if voice_clients[ctx.guild.id]["random"]:
-        random.shuffle(a)
-    for i in a:
-        voice_clients[ctx.guild.id]["list"].append(i)
-    await ctx.send("orange已加入播放清單")
-    if voice_clients[ctx.guild.id]["song"] > 0:
-        await ctx.send("已加入播放清單，等待播放")
-    else:
-        await playing_music(ctx,vc)
+
 
 async def fix(ctx,vc,set):
+    """語音區域切換"""
     voice_channel = ctx.author.voice.channel
 #    a = False
 #    if voice_channel == voice_clients[ctx.guild.id]["vc"]:
@@ -279,13 +277,11 @@ play_command = {
     "youtube":youtube,
     "next":next,
     "defult":defult,
-    "orange":orange,
     "d":defult,
     "y":youtube,
     "r":set_random,
     "l":loop,
     "n":next,
-    "o":orange,
     "touhou":touhou,
     "t":touhou,
     "fix":fix,
@@ -294,16 +290,19 @@ play_command = {
 #####################################################################################################################################
 @bot.command()
 async def list(ctx,command,set:str=None,url:str=None):
+    """播放清單設置"""
     if command in list_command:
         await list_command[command](ctx,command,set)
     else:
         await ctx.send("輸入錯誤")
 async def list_play(ctx,name,url):
+    """播放清單播放"""
     if name in data_num["music_list"][ctx.auther.id]:
         await play(ctx,"y",data_num["music_list"][ctx.auther.id][name])
     else:
         await ctx.send("輸入錯誤")
 async def list_create_list(ctx,name,url):
+    """創建播放清單"""
     try:
         if "youtube.com/playlist?list=" in url:
             with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
@@ -345,42 +344,43 @@ def save_json(data,a=True):
     if a:
         with open('music.json','w') as f:
             json.dump(data,f)
-    else:
-        with open('orange.json','w') as f:
-            json.dump(data,f)
 
 
 async def playing_music(ctx, vc):
+    """實際的撥放音樂控制器"""
+    #音樂的歌單檢查
     slist = voice_clients[ctx.guild.id]["list"]
     if voice_clients[ctx.guild.id]["song"] == len(slist) or voice_clients[ctx.guild.id]["list"] == []:#如果播完
-        if voice_clients[ctx.guild.id]["loop"] and voice_clients[ctx.guild.id]["list"] != []:
-            if voice_clients[ctx.guild.id]["random"]:
+        if voice_clients[ctx.guild.id]["loop"] and voice_clients[ctx.guild.id]["list"] != []:#如果要循環
+            if voice_clients[ctx.guild.id]["random"]:#如果有開隨機撥放
                 random.shuffle(slist)
-            voice_clients[ctx.guild.id]["song"] = 0
+            voice_clients[ctx.guild.id]["song"] = 0#重製索引
         else:
-            voice_clients[ctx.guild.id]["list"] = []
+            voice_clients[ctx.guild.id]["list"] = []#重製數據並退出
             voice_clients[ctx.guild.id]["song"] = 0
             await ctx.send('No more songs in queue.')
             return
-
+    #撥放控制
     loop = asyncio.get_event_loop()
     song = slist[voice_clients[ctx.guild.id]["song"]]##要改這裡
-    voice_clients[ctx.guild.id]["song"] += 1
-    if "&list=" in song[1]:
+    voice_clients[ctx.guild.id]["song"] += 1#下一首調整
+    #loop是取得之前的執行緒
+    #song是歌單 所有的歌曲 [0]是本地的 [1]是網路上抓下來的
+    if "&list=" in song[1]:#刪除音樂歌單的網址
         song[1] = song[1].split("&list=")[0]
 
-    if song[0] == 0:
+    if song[0] == 0:#本地音樂撥放 !本地的撥放方法跟網路上抓下來的不一樣
         song = song[1]
         song_name = os.path.basename(song)
         vc.play(discord.FFmpegPCMAudio(song), after=lambda e:loop.create_task(next_song(ctx, vc)))
-    elif song[0] == 1:
+    elif song[0] == 1:#線上音樂撥放
         with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
             try:
-                info = ydl.extract_info(song[1], download=False)
+                info = ydl.extract_info(song[1], download=False)#不下載載入音樂
                 song_name = info['title']
                 song = info['url']
-                del info
-                vc.play(discord.FFmpegPCMAudio(song, **ffmpeg_options), after=lambda e:loop.create_task(next_song(ctx, vc)))
+                del info#清內存
+                vc.play(discord.FFmpegPCMAudio(song, **ffmpeg_options), after=lambda e:loop.create_task(next_song(ctx, vc)))#撥放並設置撥放完後的啟動函數
             except:
                 await ctx.send("無法一首該歌曲")
                 await next_song(ctx,vc)
@@ -390,12 +390,13 @@ async def playing_music(ctx, vc):
 
 
 async def next_song(ctx, vc, c = False):
+    """設置播放下一首歌的控制器，判斷是有形成迴圈"""
     if ctx.guild.id not in voice_clients:
         return
     if voice_clients[ctx.guild.id]["stop"]:
         voice_clients[ctx.guild.id]["stop"] = False
         return
-    if c:
+    if c: #插播判定
         voice_clients[ctx.guild.id]["stop"] = True
     vc.stop()
     await playing_music(ctx,vc)
@@ -522,6 +523,7 @@ async def leave(ctx):
 
 @bot.command()
 async def play(ctx,mod:str=None,set:str=None):
+    """撥放音樂前置指令"""
     if ctx.guild.id not in voice_clients and set != "f" and set != "fix":
         await join(ctx)
         
@@ -556,41 +558,30 @@ async def resume(ctx):
 @bot.command()
 async def scan(ctx):
     music = scan_music_files(directory_to_scan)
+    music += scan_music_files(directory_steam)
     save_json(music)
     await ctx.send(f"在目標資料夾尋找到{len(music)}首歌曲")
 
-@bot.command()
-async def orange_scan(ctx):
-    music = scan_music_files(directory_orange)
-    save_json(music,False)
-    await ctx.send(f"在目標資料夾尋找到{len(music)}首歌曲")
 
 @bot.command()
 async def next(ctx):
+    """播放下一首歌"""
     if ctx.guild.id in voice_clients:
         vc = voice_clients[ctx.guild.id]["vc"]
         await next_song(ctx,vc,True)
 @bot.command()
 async def stop(ctx):
+    """停止播放音樂，並重製播放清單"""
     if ctx.guild.id in voice_clients:
         vc = voice_clients[ctx.guild.id]["vc"]
         voice_clients[ctx.guild.id]["list"] = []
         voice_clients[ctx.guild.id]["song"] = 0
         voice_clients[ctx.guild.id]["stop"] = True
         vc.stop()
-@bot.command()
-async def special(ctx):
-    song = r"D:\SteamLibrary\steamapps\music\100% Orange Juice - Character Song Pack Ultimate Weapon Girl\Ultimate Weapon Girl - Character Song Pack OST\Track 5 - Ultimate Weapon Girl (Bonus Track).mp3"
-    if ctx.guild.id in voice_clients:
-        vc = voice_clients[ctx.guild.id]["vc"]
-        vc.play(discord.FFmpegPCMAudio(song))
-        song_name = os.path.basename(song)
-        await ctx.send(f'Now playing: ??????????????????????????????????????????')
-    else:
-        await ctx.send('Not in a voice channel.')
 
 @bot.command()
 async def special1(ctx):
+    """自訂音樂指令"""
     song = r"C:\Users\ASUS\Desktop\【神威鬼鸣】千本幼女_(法律已经阻止不了蘿莉控了)_2.mp4"
     if ctx.guild.id in voice_clients:
         vc = voice_clients[ctx.guild.id]["vc"]
@@ -602,6 +593,7 @@ async def special1(ctx):
 
 @bot.command()
 async def CNM(ctx):
+    """自訂音樂指令"""
     song = r"C:\Users\ASUS\Downloads\【戰地風雲4】戰地4中文神配音 - 友軍之圍  笑死了！我中彈了....wav"
     if ctx.guild.id in voice_clients:
         vc = voice_clients[ctx.guild.id]["vc"]
@@ -612,10 +604,12 @@ async def CNM(ctx):
         await ctx.send('Not in a voice channel.')
 @bot.command()
 async def c(ctx):
+    """Custom 輸出檢查voice_clients用"""
     await ctx.send(voice_clients)
 
 @bot.command()
 async def ban(ctx):
+    """ban"""
     if ctx.author.id == 649969607406387200 and ctx.message.mentions:
         await ctx.send("Done")
         with open('data.json','w') as f:
@@ -624,6 +618,7 @@ async def ban(ctx):
 
 @bot.command()
 async def unban(ctx):
+    """解除ban"""
     if ctx.author.id == 649969607406387200 and ctx.message.mentions:
         await ctx.send("Done")
         with open('data.json','w') as f:
@@ -633,6 +628,7 @@ async def unban(ctx):
 
 @bot.command()
 async def help(ctx):
+    """未完成的的指令表"""
     embed = discord.Embed(title="Custom Help", description="This is a custom help command.")
     embed.add_field(name="!join", value="加入語音頻道")
     embed.add_field(name="!leave", value="離開語音頻道")
@@ -646,6 +642,7 @@ async def help(ctx):
     await ctx.send(embed=embed)
 @bot.command()
 async def chelp(ctx):
+    """自製的的指令"""
     await ctx.send("""```可憐打工仔的指令:
     !join - 加入語音頻道
     !leave - 離開語音頻道
@@ -655,7 +652,6 @@ async def chelp(ctx):
            y/youtube (URL) - 播放youtube歌曲(雖然這樣說但twitch也可以撥放(抖音好像也可以)
            n/next - 顯示下三首歌曲
            d/defult - 播放預設歌曲(我電腦的所有歌)
-           o/orange - 播放100% orange juice歌曲
            t/touhou - 播放⑨歌曲
     !r (URL) - 插播
     !pause - 暫停
@@ -677,7 +673,7 @@ async def on_message(message):
     if message.author == bot.user or message.author.id in data_num["ban"]:
         return
     await bot.process_commands(message)
-    if message.channel.id == 1216603222215491594:
+    if message.channel.id == 1216603222215491594:#指定頻道搬運到複製頻道
         image = []
         try:
             for i in message.attachments:
@@ -711,7 +707,7 @@ async def on_message(message):
                 
 @bot.event
 async def on_message_edit(before, after):
-
+    """編輯訊息檢查"""
     if before.content != after.content:
         if before.channel.id == 1216603222215491594:
             send = 1216430186917003428
@@ -726,57 +722,23 @@ async def on_message_edit(before, after):
 #分群身分組一般人跟怪人
 @bot.event
 async def on_raw_reaction_add(payload):
-    print (payload.emoji)
+    """加入身分組"""
     guild = bot.get_guild(payload.guild_id)
-    if payload.message_id == 1216564236487229562:#分群身分組一般人跟怪人
-        if str(payload.emoji) == '<:miku:1216434199675015188>':
-            role = 1216560881719050260
-            role = guild.get_role(role)
-            await payload.member.add_roles(role)
-        elif str(payload.emoji) == '<:emoji_2:1216564009692692491>':
-            role = 1216560795261861939
-            role = guild.get_role(role)
-            await payload.member.add_roles(role)
-    elif payload.message_id == 1216688099036495902:#主群身分組一般人跟怪人
-        if str(payload.emoji) == '<:blue_archive:1197924218160025660>':
-            role = 1216400867356573706
-            role = guild.get_role(role)
-            await payload.member.add_roles(role)
-        elif str(payload.emoji) == '<:more18:1162345474586591263>':
-            role = 1216400764033957888
-            role = guild.get_role(role)
-            await payload.member.add_roles(role)
-    elif payload.message_id == 1233694947568390144:#國家級邊緣人
-        if str(payload.emoji) == '<:emoji_21:1224632456305442837>':
-            role = 1233693554023334011
-            role = guild.get_role(role)
-            await payload.member.add_roles(role)
+    if payload.message_id in data["role"] and payload.emoji.name in data["role"][payload.message_id]:
+        role = data["role"][payload.message_id][payload.emoji.name]
+        member = guild.get_member(payload.user_id)
+        role = guild.get_role(role)
+        await member.add_roles(role)
+
+
 @bot.event
 async def on_raw_reaction_remove(payload):
+    """移除身分組"""
     guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
-    if payload.message_id == 1216564236487229562:#分群身分組一般人跟怪人
-        if str(payload.emoji) == '<:miku:1216434199675015188>':
-            role = 1216560881719050260
-            role = guild.get_role(role)
-            await member.remove_roles(role)
-        elif str(payload.emoji) == '<:emoji_2:1216564009692692491>':
-            role = 1216560795261861939
-            role = guild.get_role(role)
-            await member.remove_roles(role)
-    elif payload.message_id == 1216688099036495902:#主群身分組一般人跟怪人
-        if str(payload.emoji) == '<:blue_archive:1197924218160025660>':
-            role = 1216400867356573706
-            role = guild.get_role(role)
-            await member.remove_roles(role)
-        elif str(payload.emoji) == '<:more18:1162345474586591263>':
-            role = 1216400764033957888
-            role = guild.get_role(role)
-            await member.remove_roles(role)
-    elif payload.message_id == 1233694947568390144:#國家級邊緣人
-        if str(payload.emoji) == '<:emoji_21:1224632456305442837>':
-            role = 1233693554023334011
-            role = guild.get_role(role)
-            await member.remove_roles(role)
+    if payload.message_id in data["role"] and payload.emoji.name in data["role"][payload.message_id]:
+        role = data["role"][payload.message_id][payload.emoji.name]
+        member = guild.get_member(payload.user_id)
+        role = guild.get_role(role)
+        await member.remove_roles(role)
 
-bot.run('OTEyNzM4NTUyNzI5NzAyNDcw.GmniJ0.p5Lt5ZjjNgj_IegxHv5NpLJEJNBQk091junzp8') 
+bot.run(pwd["tocken"]) 
