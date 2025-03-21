@@ -2,8 +2,6 @@
 import discord
 from discord.ext import commands
 from discord import FFmpegPCMAudio
-from discord.ext import commands
-
 import random
 import json
 import asyncio
@@ -11,6 +9,8 @@ import yt_dlp
 import urllib.request
 import ssl
 import os
+import aiofiles
+import time
 
 
 #from . import pycld3
@@ -111,6 +111,8 @@ async def on_command_error(ctx, error):
         return
     # 如果是其他錯誤，則顯示
     raise error
+
+
 
 
 #####################################################################################################################################
@@ -476,9 +478,14 @@ def play_online_song(vc, song, ffmpeg_options, loop, ctx):
             return song_name
 
         except Exception as e:
-            loop.create_task(ctx.send("無法播放該歌曲"))
-            loop.create_task(next_song(ctx, vc))
-            print(f"播放錯誤: {e}")  # 可以用於 debug
+            ctx.send("無法播放該歌曲")
+            next_song(ctx, vc)
+            ctx.send(f"播放錯誤: {e}")  # 可以用於 debug
+            with open("debug.log", "a") as f:
+                f.write(f"播放錯誤: [{time.strftime('%Y-%m-%d %H:%M:%S')}] {e}\n")
+                
+
+
             return None
 
 
@@ -540,18 +547,7 @@ async def next_song(ctx, vc, c=False):
 
 
 
-async def next_song(ctx, vc, c = False):
-    """設置播放下一首歌的控制器，判斷是有形成迴圈"""
-    if ctx.guild.id not in voice_clients:
-        return
-    if voice_clients[ctx.guild.id]["stop"]:
-        voice_clients[ctx.guild.id]["stop"] = False
-        return
-    if c: #插播判定
-        voice_clients[ctx.guild.id]["stop"] = True
-    vc.stop()
-    await playing_music(ctx,vc)
-    
+
     
 @bot.command()
 async def r(ctx,url):
@@ -666,13 +662,15 @@ async def admin(ctx,set,id,emoji,group_id):
 async def on_ready():
     global f
     print('目前登入身份：',bot.user)
-    game = discord.Game("夜襲博士模擬器")
+    game = discord.Game("二分之一的自殺 今日 反面")
     #discord.Status.<狀態>，可以是online,offline,idle,dnd,invisible
     await bot.change_presence(status=discord.Status.online, activity=game)
     await bot.wait_until_ready()
+    print("準備完成，載入指令")
     for filename in os.listdir('./cogs'):
         if filename.endswith('.py'):
             await bot.load_extension(f'cogs.{filename[:-3]}')
+            await bot.tree.sync()
             print(f'已載入 {filename[:-3]} 指令')
     if f:
         await warning()
@@ -854,8 +852,6 @@ async def news(ctx):
     撥放steam的原聲帶功能，目前搜尋系統完成但本地撥放炸掉了
     音量倍率可調整效果(目前0.5%)```""")
 #########################################################################################################
-
-
 
 
 @bot.event
