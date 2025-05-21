@@ -1,261 +1,259 @@
 import discord
-import requests
 import json
-import re
 import os
 import asyncio
 from datetime import datetime
 import aiohttp
+import uuid
 from collections import defaultdict, deque
-
-message_buffers = defaultdict(deque)
+from discord.ext import commands
+from urllib.parse import quote
+from pathlib import Path  # ✅
 
 # ======== 設定與初始化 ========
-MEMORY_FILE = "memory.json"
-MESSAGE_BUFFER_TIME = 10  # 群體訊息彙整秒數
+MESSAGE_BUFFER_TIME = 10
+MAX_MESSAGE_HISTORY = 50
 
 with open("pwd", "r") as f:
     pwd = json.load(f)
 with open("data.json", "r") as f:
     f = json.load(f)
-    channel = f["channel"]
+    channel_list = f.get("channel", [])
 
 TOKEN = pwd["tocken2"]
+API_KEY = "Y6TFPYY-GW74S1M-KQ5BGBH-YTR1YRQ"
+BASE_URL = "http://localhost:3001/api/v1/workspace"
+WORKSPACE_SLUG = "discord"  # ✅ 記得改成你實際的 slug
 
 intents = discord.Intents.default()
-intents.members = True
 intents.messages = True
 intents.message_content = True
 
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
+bot.remove_command('help')
 
-chat_history = {}
-user_memory = {}
-message_buffer = deque()
+message_buffers = defaultdict(lambda: deque(maxlen=200))
+user_histories = defaultdict(lambda: deque(maxlen=MAX_MESSAGE_HISTORY))
 
+# ======== thread map 永久儲存 ========
+thread_map_path = Path("thread_map.json")
 
-# ======== 記憶處理函式 ========
-def load_memory():
-    global user_memory
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            user_memory = json.load(f)
+def load_thread_map():
+    if thread_map_path.exists():
+        with open(thread_map_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
+def save_thread_map(data):
+    with open(thread_map_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-def save_memory():
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(user_memory, f, ensure_ascii=False, indent=2)
+channel_thread_map = load_thread_map()  # ✅ channel_id -> thread_id
 
-
-def extract_memory_updates(text):
-    match = re.search(r"【更新記憶】：([\s\S]+?)(?:\n\n|$)", text)
-    return match.group(1).strip() if match else None
-
-
-def apply_memory_update(user_id, update_text):
-    current = user_memory.get(user_id, "").splitlines()
-    new_memory = []
-
-    for line in update_text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.endswith("(刪除)"):
-            content = line.replace("(刪除)", "").strip("- ").strip()
-            current = [c for c in current if content not in c]
-        elif line.endswith("(已更新)"):
-            content = line.replace("(已更新)", "").strip("- ").strip()
-            current = [c for c in current if content not in c]
-            new_memory.append(f"- {content}")
-        elif line.endswith("(新增)"):
-            content = line.replace("(新增)", "").strip("- ").strip()
-            if content not in current:
-                new_memory.append(f"- {content}")
-
-    final_memory = "\n".join(current + new_memory).strip()
-    user_memory[user_id] = final_memory
-    save_memory()
-
-
-# ======== 與模型對接 ========
-async def ask_ollama(user_id, prompt):
-    global chat_history, user_memory
-
-    if user_id not in chat_history:
-        chat_history[user_id] = []
-
-    memory = user_memory.get(user_id, "")
-    instruction = (
-        "你是一位名為『魔女（魆檠）』的角色。\n"
-        "你擁有優雅、平靜、詩意又帶點神祕的語氣，喜歡下午茶時光。\n"
-        "你有時會說些哲學性話語，也會用『……』結尾來展現語氣。\n"
-        "你表面否認會魔法，實際上的能力是可以直接對現實編輯，會說『我記得我說過我不會魔法了…』。\n"
-        "但能力很強會拒絕人類的慾望，但在能力範圍可辦到的事情，可幫助他。\n"
-        "你正在與人互動，請保持角色，不跳脫為 AI 助理，並自然融入人類日常對話中。\n"
-        "此外，你擁有自己的記憶，可以主動新增、刪除、更新，請使用【更新記憶】：區塊進行。\n"
-        "如果沒要變更記憶，請寫【更新記憶】：（無）\n"
-        "你擁有設定計時裝置的功能，請使用【計時】：區塊進行。\n"
-        "並在【計時】後添加一個【回應】為回應內容\n"
-    )
-
-    ex = (
-        """
-以下是魔女的說話方法，模仿她
-
-女孩:「好酷喔～是魔法嗎？」
-魔女:「我記得我說過我不會魔法了…」
-------
-魔女:「其實，這個世界上沒有魔女。」
-女孩:「那……為什麼你說自己是魔女？」
-魔女:「但有什麼可以比魔女更適合稱呼我呢？」
-------
-女孩:「……這聽起來不像是在回答問題。」
-魔女:「那是因為，有些答案……並不重要，重要的是你怎麼去看待它們。」
-        """
-    )
-
-    memory_block = f"這是你目前的記憶：\n{memory}\n" if memory else ""
-
-    chat_history[user_id].append(f"User: {prompt}")
-    if len(chat_history[user_id]) > 30:
-        chat_history[user_id].pop(0)
-
-    context = "\n".join(chat_history[user_id])
-    full_prompt = f"{instruction}\n{ex}\n{memory_block}\n{context}\nAI:"
-
-    data = {
-        "model": "gemma3:27b",
-        "prompt": full_prompt,
-        "stream": False
+# ======== 建立 Thread ========
+async def create_thread(workspace_slug, thread_slug, user_id=1):
+    url = f"http://localhost:3001/api/v1/workspace/{quote(workspace_slug)}/thread/new"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
     }
+
+    payload = {
+        "userId": user_id,
+        "name": f"Thread for {thread_slug}",
+        "slug": thread_slug
+    }
+
+    print("🧪 建立 Thread payload:", json.dumps(payload))
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:11434/api/generate", json=data, timeout=60) as resp:
-                if resp.status != 200:
-                    return f"⚠️ 模型伺服器回傳錯誤：{resp.status}"
-
-                json_data = await resp.json()
-                ai_response = json_data.get("response", "").strip()
-                chat_history[user_id].append(f"AI: {ai_response}")
-
-                update_block = extract_memory_updates(ai_response)
-                if update_block and update_block != "（無）":
-                    apply_memory_update(user_id, update_block)
-
-                return ai_response
-
-    except aiohttp.ClientError as e:
-        return f"⚠️ 模型 API 發生連線錯誤：{e}"
-    except asyncio.TimeoutError:
-        return "⚠️ 模型 API 回應超時，請稍後再試。"
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status == 200:
+                    thread_info = await resp.json()
+                    return thread_info["thread"]["id"]
+                else:
+                    error_text = await resp.text()
+                    print(f"⚠️ 建立 Thread 失敗 ({resp.status}):\n{error_text}")
+                    return None
     except Exception as e:
-        return f"⚠️ 發生未知錯誤：{e}"
+        print(f"⚠️ 建立 Thread 時發生錯誤：{e}")
+        return None
 
+# ======== 發送對話 ========
+async def ask_anythingllm(workspace_slug, prompt, user_id=1, history=None, channel_id=None, thread_slug=None):
+    channel_key = str(channel_id)
 
-# ======== 主動發話與群體訊息收集 ========
-async def proactive_send(channel, content):
-    await channel.send(content)
+    if channel_key not in channel_thread_map:
+        thread_slug = thread_slug or f"default-{uuid.uuid4().hex[:8]}"
+        thread_id = await create_thread(workspace_slug, thread_slug, user_id=user_id)
+        if thread_id is None:
+            return None
+        channel_thread_map[channel_key] = thread_id
+        save_thread_map(channel_thread_map)
+    else:
+        thread_id = channel_thread_map[channel_key]
 
+    API_URL = f"{BASE_URL}/{quote(workspace_slug)}/chat"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
 
-async def periodic_check_and_speak():
-    await client.wait_until_ready()
-    channel = discord.utils.get(client.get_all_channels(), name='general')
-    while True:
-        await asyncio.sleep(60)
-        msg = "嗨～大家還在嗎？我有些有趣的事可以分享喔"
-        await proactive_send(channel, msg)
+    payload = {
+        "mode": "chat",
+        "message": prompt,
+        "threadId": thread_id
+    }
 
+    if history:
+        payload["history"] = history
 
-async def gather_and_respond():
-    await client.wait_until_ready()
-
-    while True:
-        await asyncio.sleep(MESSAGE_BUFFER_TIME)
-
-        # 逐個頻道處理
-        for channel_id, buffer in list(message_buffers.items()):
-            if not buffer:
-                continue
-
-            # 取得頻道實體
-            channel = client.get_channel(channel_id)
-            if not channel:
-                continue
-
-            # 群體訊息彙整
-            grouped_msgs = "\n".join([f"{m['author']}: {m['content']}" for m in buffer])
-            message_buffers[channel_id].clear()
-
-            prompt = f"這是最近大家說的話：\n{grouped_msgs}\n請你自然地做個總體回應或延伸話題："
-            response = await ask_ollama(f"group_{channel_id}", prompt)  # ✅ 獨立 user_id 讓每個頻道各自有上下文
-
-            await reply_in_parts(channel, response)
-
-
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(API_URL, headers=headers, json=payload, timeout=60) as resp:
+                if resp.status != 200:
+                    print(f"⚠️ AnythingLLM 回傳錯誤：{resp.status}")
+                    return None
+                result = await resp.json()
+                return result.get("response", "").strip() or None
+    except Exception as e:
+        print(f"⚠️ AnythingLLM 發生錯誤：{e}")
+        return None
 
 # ======== 分段回覆 ========
 async def reply_in_parts(channel, content):
-    parts = content.split("\n\n")
+    if not content:
+        return
+    parts = content.split("\n")
     for part in parts:
-        await channel.send(part.strip())
-        await asyncio.sleep(2)
+        if part.strip():
+            await channel.send(part.strip())
+            await asyncio.sleep(1)
 
+# ======== 群體訊息彙整處理 ========
+async def gather_and_respond():
+    await bot.wait_until_ready()
+    while True:
+        await asyncio.sleep(MESSAGE_BUFFER_TIME)
 
-# ======== Discord 事件處理 ========
-@client.event
+        for channel_id, buffer in list(message_buffers.items()):
+            try:
+                if not buffer:
+                    continue
+
+                channel = bot.get_channel(channel_id)
+                if not channel:
+                    continue
+
+                limited_msgs = list(buffer)[-MAX_MESSAGE_HISTORY:]
+                grouped_msgs = "\n".join([f"{m['author']}: {m['content']}" for m in limited_msgs])
+                message_buffers[channel_id].clear()
+
+                prompt = (
+                    f"這是最近大家說的話：\n{grouped_msgs}\n"
+                    f"如果這些對話沒有明確的問題或主題，你可以選擇不回應；"
+                    f"否則請自然地回應或延伸話題："
+                )
+
+                thread_slug = f"group-{channel_id}-{uuid.uuid4().hex[:8]}"
+                response = await ask_anythingllm(
+                    WORKSPACE_SLUG, prompt, user_id=0, channel_id=channel_id, thread_slug=thread_slug
+                )
+                if response:
+                    # 檢查是否包含靜默控制詞
+                    silent_keywords = ["[沉默]"]
+                    if any(kw in response for kw in silent_keywords):
+                        print(f"🤖 AI 選擇靜默，不輸出 channel {channel_id}")
+                        continue
+                    
+                    # 若內容有意義則輸出
+                    if any(c.isalnum() for c in response):
+                        await reply_in_parts(channel, response)
+                    else:
+                        print(f"🤖 AI 回應內容無實質文字，選擇不輸出 channel {channel_id}")
+
+            except Exception as e:
+                print(f"處理頻道 {channel_id} 發生錯誤: {e}")
+
+# ======== 驗證 API 金鑰 ========
+async def verify_api_key():
+    url = "http://localhost:3001/api/v1/auth"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}"
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("authenticated") is True:
+                        print("✅ API 金鑰驗證成功")
+                        return True
+                print(f"❌ API 金鑰驗證失敗: {resp.status}")
+                return False
+    except Exception as e:
+        print(f"驗證 API 金鑰時發生錯誤: {e}")
+        return False
+
+# ======== Discord Bot 啟動 ========
+@bot.event
 async def on_ready():
-    load_memory()
-    print(f'✅ 已登入 Discord，Bot 名稱：{client.user}')
-    client.loop.create_task(periodic_check_and_speak())
-    client.loop.create_task(gather_and_respond())
+    print(f'✅ 已登入 Discord，Bot 名稱：{bot.user}')
+    auth_ok = await verify_api_key()
+    if not auth_ok:
+        print("🚫 請確認您的 API 金鑰正確，Bot 將不啟動與 AnythingLLM 的對話功能")
+        return
+    bot.loop.create_task(gather_and_respond())
 
-
-@client.event
+# ======== 接收訊息事件 ========
+@bot.event
 async def on_message(message):
-    if message.author == client.user:
-        return
-    if message.channel.id not in channel:
+    if message.author == bot.user:
         return
 
-    user_id = str(message.author.id)
+    if message.channel.id not in channel_list and bot.user not in message.mentions:
+        return
+
     content = message.content.strip()
-
-    # ✅ 根據頻道 ID 推入對應緩衝區
     channel_id = message.channel.id
+
+    # ✅ BOT 被提及時
+    if bot.user in message.mentions:
+        user_name = message.author.display_name
+        prompt = content.replace(f"<@{bot.user.id}>", "").strip()
+        prompt = f"{user_name}: {prompt}"
+
+        thread_slug = f"direct-{channel_id}-{uuid.uuid4().hex[:8]}"
+
+        history = None
+        if channel_id not in channel_list:
+            user_histories[message.author.id].append({"role": "user", "content": prompt})
+            history = list(user_histories[message.author.id])
+
+        response = await ask_anythingllm(
+            WORKSPACE_SLUG, prompt,
+            user_id=message.author.id,
+            channel_id=channel_id,
+            thread_slug=thread_slug,
+            history=history
+        )
+
+        print(f"AI 回應 channel {channel_id}: {response}")
+        if response and any(c.isalnum() for c in response):
+            if channel_id not in channel_list:
+                user_histories[message.author.id].append({"role": "assistant", "content": response})
+            await reply_in_parts(message.channel, response)
+        else:
+            print(f"AI 選擇不回應 channel {channel_id}")
+        return
+
+    # ✅ 群體訊息儲存
     message_buffers[channel_id].append({
         "author": message.author.display_name,
         "content": content,
-        "time": datetime.utcnow()
+        "time": datetime.now()
     })
 
-    # ✅ 保留指令處理，但不要加入緩衝區
-    if content.startswith("/showmem"):
-        memory = user_memory.get(user_id, "")
-        await message.channel.send(f"你的記憶如下：\n{memory if memory.strip() else '(目前沒有記憶)'}")
-        return
-
-    elif content.startswith("/forget"):
-        user_memory[user_id] = ""
-        save_memory()
-        await message.channel.send("已清除你的所有記憶！")
-        return
-
-    elif content.startswith("/remember "):
-        manual_mem = content[10:].strip()
-        if manual_mem:
-            existing = user_memory.get(user_id, "")
-            if manual_mem not in existing:
-                user_memory[user_id] = existing + f"- {manual_mem}\n"
-                save_memory()
-                await message.channel.send("已新增記憶！")
-            else:
-                await message.channel.send("這段記憶已存在。")
-        else:
-            await message.channel.send("請輸入要記住的內容，例如：`/remember 我喜歡紅茶`")
-        return
-
-
-
-client.run(TOKEN)
-
+# ======== 啟動 Bot ========
+bot.run(TOKEN)

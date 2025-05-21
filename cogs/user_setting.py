@@ -32,11 +32,11 @@ class UserSetting(app_commands.Group):
         data = await read_data()
         user_id = str(interaction.user.id)
         if user_id not in data:
-            data[user_id] = {}
-        data[user_id]["sound"] = value
+            data["user_setting"][user_id] = {}
+        data["user_setting"][user_id]["sound"] = value
         await write_data(data)
         await interaction.response.send_message(
-            f"音量設定完成，目前音量為 {data[user_id]['sound']}",
+            f"音量設定完成，目前音量為 {data['user_setting'][user_id]['sound']}",
             ephemeral=True
         )
 
@@ -52,10 +52,10 @@ class UserSetting(app_commands.Group):
         user_id = str(interaction.user.id)
         if user_id not in data:
             data[user_id] = {}
-        data[user_id]["loop"] = status
+        data["user_setting"][user_id]["loop"] = status
         await write_data(data)
         await interaction.response.send_message(
-            f"音樂循環播放設定完成，目前狀態為 {data[user_id]['loop']}",
+            f"音樂循環播放設定完成，目前狀態為 {data['user_setting'][user_id]['loop']}",
             ephemeral=True
         )
 
@@ -69,12 +69,12 @@ class UserSetting(app_commands.Group):
             return
         status = True if value.lower() == "on" else False
         user_id = str(interaction.user.id)
-        if user_id not in data:
-            data[user_id] = {}
-        data[user_id]["shuffle"] = status
+        if user_id not in data['user_setting']:
+            data['user_setting'][user_id] = {}
+        data["user_setting"][user_id]["shuffle"] = status
         await write_data(data)
         await interaction.response.send_message(
-            f"音樂隨機播放設定完成，目前狀態為 {data[user_id]['shuffle']}",
+            f"音樂隨機播放設定完成，目前狀態為 {data['user_setting'][user_id]['shuffle']}",
             ephemeral=True
         )
 

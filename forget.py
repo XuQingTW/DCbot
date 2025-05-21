@@ -868,52 +868,6 @@ async def on_message(message):
         if len(message.content) == 6 and message.content.isdigit():
             await message.channel.send(f"https://nhentai.net/g/{message.content}/")
         return    
-    if message.channel.id == 1216603222215491594:#指定頻道搬運到複製頻道
-        send = 1216430186917003428
-        send2= 1308741359989162044
-        channel = bot.get_channel(send)
-        channel2 = bot.get_channel(send2)
-        try:
-            if len(message.attachments) == 0:
-                await channel.send(message.content)
-                await channel2.send(message.content)    
-            else:
-                for i in message.attachments:
-                    await channel.send(i)
-                    await channel2.send(i)
-        except:
-            for i in message.attachments:
-                await channel.send(i)
-                await channel2.send(i)
-        return
-    elif message.channel.id == 1216602901695430676:
-        send = 1216430327585833041
-        channel = bot.get_channel(send)
-        try:
-            if len(message.attachments) == 0:
-                await channel.send(message.content)
-            else:
-                for i in message.attachments:
-                    await channel.send(i)
-        except:
-            for i in message.attachments:
-                await channel.send(i)
-        return
-
-
-                
-@bot.event
-async def on_message_edit(before, after):
-    """編輯訊息檢查"""
-    if before.content != after.content:
-        if before.channel.id == 1216603222215491594:
-            send = 1216430186917003428
-            channel = bot.get_channel(send)
-            await channel.send(after.content)
-        elif before.channel.id == 1216602901695430676:
-            send = 1216430327585833041
-            channel = bot.get_channel(send)
-            await channel.send("編輯後:"+after.content)
         
 
 
