@@ -11,6 +11,11 @@ import ssl
 import os
 import aiofiles
 import time
+import aiohttp
+
+async def run_blocking(func, *args, **kwargs):
+    """在背景執行緒執行阻塞函式，避免卡住事件迴圈"""
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 #from . import pycld3
@@ -78,30 +83,77 @@ ytdl_list_format_options = {
 #####################################################################################################################################
 
 async def warning():
-    """地震報告通知，就只是單純的大型json解碼而已，沒需要改吧"""
+    """地震報告通知"""
     global bot
+    await bot.wait_until_ready()
     send = 1224902159200686110
     channel = bot.get_channel(send)
-    id = data_num["id"]
+    id_ = str(data_num.get("id", ""))  # 統一轉成字串
     print("start search")
-    while True:
-        with urllib.request.urlopen(json_url, context=context) as jsondata:
-            #將JSON進行UTF-8的BOM解碼，並把解碼後的資料載入JSON陣列中
-            data = json.loads(jsondata.read().decode('utf-8-sig'))
-        data = data['records']['Earthquake'][0]
-        if data['EarthquakeNo'] != id:
-            print(data['EarthquakeNo'])
-            embed = discord.Embed()
-            embed.set_image(url=data['ReportImageURI'])
-            if data["EarthquakeInfo"]["EarthquakeMagnitude"]["MagnitudeValue"] > 7:
-                await channel.send(f"<@everyone>\n地震編號：{data['EarthquakeNo']}\n報告內容：{data['ReportContent']}\n",embed=embed)
-            else:
-                await channel.send(f"地震編號：{data['EarthquakeNo']}\n報告內容：{data['ReportContent']}\n",embed=embed)
-            id = data['EarthquakeNo']
-            with open('data.json','w') as f:
-                data_num["id"] = data['EarthquakeNo']
-                json.dump(data_num,f)
-        await asyncio.sleep(30)
+
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"Accept": "application/json"}
+    
+    backoff = 1
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        try:
+            while not bot.is_closed():
+                try:
+                    async with session.get(json_url, ssl=False) as resp:
+                        resp.raise_for_status()
+                        payload = await resp.json(content_type=None)
+
+                    # 正確的路徑
+                    eq = payload['records']['Earthquake'][0]
+                    eq_no = str(eq['EarthquakeNo'])  # 統一字串比較
+
+                    if eq_no != id_:
+                        # 先找 ReportImageURI；若沒有再嘗試 ReportImageURL（兼容）
+                        img = eq.get("ReportImageURI") or eq.get("ReportImageURL")
+
+                        # 正確的震級路徑
+                        mag = float(eq["EarthquakeInfo"]["EarthquakeMagnitude"]["MagnitudeValue"])
+
+                        content = (
+                            f"地震編號：{eq_no}\n"
+                            f"報告內容：{eq.get('ReportContent','(無)')}\n"
+                        )
+                        if mag >= 7.0:
+                            content = f"<@everyone>\n{content}"
+
+                        embed = discord.Embed()
+                        if img:
+                            embed.set_image(url=img)
+
+                        await channel.send(content=content, embed=embed)
+
+                        # 更新 state（原子或至少正確關檔）
+                        data_num["id"] = eq_no
+                        id_ = eq_no
+
+                        def _write_state():
+                            with open("data.json", "w", encoding="utf-8") as f:
+                                json.dump(data_num, f, ensure_ascii=False)
+
+                        await asyncio.to_thread(_write_state)
+
+                    backoff = 1  # 成功就重置退避
+
+                except asyncio.CancelledError:
+                    break
+
+                except Exception as e:
+                    print(f"Error fetching earthquake data: {e}")
+                    await asyncio.sleep(min(backoff, 60))
+                    backoff = min(backoff * 2, 60)
+                    continue
+
+                await asyncio.sleep(30)  # 每30秒檢查一次
+
+        finally:
+            print("地震報告通知已停止")
+
+                    
 
 
 @bot.event
@@ -830,7 +882,8 @@ async def chelp(ctx):
     !next - 跳到下一首
     !scan - 更新音樂資料夾
     !chelp - 顯示指令説明
-    !help - 未完成的指令説明```""")
+    !help - 未完成的指令説明
+    !swiss - 瑞士輪比賽用```""")
 
 
 @bot.command()
