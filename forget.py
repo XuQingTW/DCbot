@@ -779,7 +779,9 @@ async def leave(ctx):
 
 @bot.command()
 async def play(ctx,mod:str=None,set:str=None):
-    """撥放音樂前置指令"""
+    """撥放音樂前置指令
+    功能損壞中
+    """
     if ctx.guild.id not in voice_clients and set != "f" and set != "fix":
         await join(ctx)
         
@@ -883,7 +885,9 @@ async def chelp(ctx):
     !scan - 更新音樂資料夾
     !chelp - 顯示指令説明
     !help - 未完成的指令説明
-    !swiss - 瑞士輪比賽用```""")
+    !swiss - 瑞士輪比賽用
+    !swiss test - 測試指令
+    !swissx - 瑞士輪查詢系統```""")
 
 
 @bot.command()
