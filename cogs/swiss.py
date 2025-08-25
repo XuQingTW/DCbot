@@ -253,6 +253,42 @@ class SwissAll(commands.Cog):
             ) as cur2:
                 mrow = await cur2.fetchone()
         return (pid, mrow) if mrow else None
+    
+    async def render_roster_text(self, tid: int) -> str:
+        """組出完整名單文字（含 active 標記、分數與 uid）。"""
+        players = await self.fetch_players(tid, active_only=False)
+        lines = []
+        for p in players:
+            tag = "✅" if p.active else "❌"
+            lines.append(f"{tag} {p.display_name} (uid={p.user_id}) 分數={p.score}")
+        return "\n".join(lines) if lines else "（目前沒有人）"
+
+    async def _open_roster_safely(self, itx: discord.Interaction, tid: int):
+        """名單 ≤3800 chars → 開 Modal；否則以附件+Embed 分頁回覆（ephemeral）。"""
+        text = await self.render_roster_text(tid)
+
+        # 方案 A：短名單 → Modal（預留空間避免接近 4000 的邊界）
+        if len(text) <= 3800:
+            return await itx.response.send_modal(self._RosterModal(self, tid, text))
+
+        # 方案 B：長名單 → 文字檔附件 + 最多 10 頁 Embed 預覽
+        buf = io.BytesIO(text.encode("utf-8"))
+        buf.seek(0)
+        file = discord.File(buf, filename=f"roster_{tid}.txt")
+
+        pages = chunk_text(text, limit=1800)  # 你已有 chunk_text 工具
+        embeds: list[discord.Embed] = []
+        total = len(pages)
+        for i, chunk in enumerate(pages[:10], 1):  # 安全起見：最多 10 個 embed
+            em = discord.Embed(title=f"名單（第 {i}/{total} 頁）", description=chunk)
+            embeds.append(em)
+
+        content = f"名單字數 **{len(text)}** 超過 Modal 限制，已附上檔案供查看/複製。"
+        if not itx.response.is_done():
+            await itx.response.send_message(content, embeds=embeds, file=file, ephemeral=True)
+        else:
+            await itx.followup.send(content, embeds=embeds, file=file, ephemeral=True)
+
 
     # -------------- Tournament utils --------------
     async def create_tournament(self, guild_id: int, organizer_id: int, name: Optional[str]) -> int:
@@ -519,6 +555,11 @@ class SwissAll(commands.Cog):
         @discord.ui.button(label="報名 Join", style=discord.ButtonStyle.success, custom_id="swiss:join")
         async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
             await self.cog.setup_db()
+            cur_status = await self.cog.tour_status(self.tid)
+            # 開賽後鎖報名
+            if cur_status not in ("register", "seeding"):
+                return await interaction.response.send_message("目前已開賽，暫不開放報名。", ephemeral=True)
+
             status = await self.cog.add_player(self.tid, interaction.user, active=1)
             if status == "banned":
                 return await interaction.response.send_message("你已被本賽事封禁，無法報名。", ephemeral=True)
@@ -529,16 +570,21 @@ class SwissAll(commands.Cog):
             }.get(status, "OK")
             await interaction.response.send_message(msg, ephemeral=True)
 
+
         @discord.ui.button(label="退出 Leave", style=discord.ButtonStyle.secondary, custom_id="swiss:leave")
         async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
             await self.cog.setup_db()
+            cur_status = await self.cog.tour_status(self.tid)  # register / swiss / top4_finals / ...
             await self.cog.mark_drop(self.tid, interaction.user.id)
-            await interaction.response.send_message("已退出／退賽。", ephemeral=True)
 
-        @discord.ui.button(label="我要退賽 Drop", style=discord.ButtonStyle.danger, custom_id="swiss:drop")
-        async def drop(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await self.cog.mark_drop(self.tid, interaction.user.id)
-            await interaction.response.send_message("已標記退賽(下一輪不再配對)。", ephemeral=True)
+            if cur_status in ("register", "seeding"):
+                # 報名期 → 視為取消報名
+                await interaction.response.send_message("已取消報名。", ephemeral=True)
+            else:
+                # 比賽中 → 視為退賽
+                await interaction.response.send_message("已標記退賽(下一輪不再配對)。", ephemeral=True)
+
+
 
     # -------- Round-level views: 三則面板(每輪各一) --------
     class RoundDeckView(discord.ui.View):
@@ -708,14 +754,23 @@ class SwissAll(commands.Cog):
         async def btn_top4(self, itx: discord.Interaction, button: discord.ui.Button):
             if not await self._is_organizer(itx): return
             await self.cog.cmd_make_top4(itx, self.tid)
+            
+        @discord.ui.button(label="我的成績(私訊)", style=discord.ButtonStyle.secondary, custom_id="swiss:mebtn")
+        async def btn_me(self, itx: discord.Interaction, button: discord.ui.Button):
+            await self.cog.ui_show_me(itx, self.tid, itx.user)
 
     # ---------- Organizer Modals ----------
     class _RosterModal(discord.ui.Modal, title="目前名單（只讀）"):
         def __init__(self, cog: 'SwissAll', tid: int, roster_text: str):
             super().__init__()
             self.cog = cog; self.tid = tid
-            self.info = discord.ui.TextInput(label="名單（自動生成，請關閉視窗即可）",
-                                             style=discord.TextStyle.paragraph, default=roster_text, required=False)
+            self.info = discord.ui.TextInput(
+                label="名單（自動生成，請關閉視窗即可）",
+                style=discord.TextStyle.paragraph,
+                default=roster_text,
+                required=False,
+                max_length=4000  # ★ 服務端也會卡 4000，但這裡先設上限較友善
+            )
             self.add_item(self.info)
         async def on_submit(self, itx: discord.Interaction):  # not used
             await itx.response.send_message("OK", ephemeral=True)
@@ -747,6 +802,42 @@ class SwissAll(commands.Cog):
             await self.cog.mark_drop(self.tid, m.id)
             await self.cog._audit(self.tid, itx.user.id, "admin_manual_drop", f"user={m.id}")
             await itx.response.send_message(f"已設為退賽：{m.display_name}", ephemeral=True)
+
+    class _AddAndReseatR1Modal(discord.ui.Modal, title="第一輪加人並重抽"):
+        who = discord.ui.TextInput(label="對象（@提及 / ID / 名稱）", required=True)
+        note = discord.ui.TextInput(label="原因/備註（可留空）", required=False)
+        def __init__(self, cog: 'SwissAll', tid: int):
+            super().__init__(); self.cog = cog; self.tid = tid
+        async def on_submit(self, itx: discord.Interaction):
+            if not await self.cog._is_organizer_user(self.tid, itx.user):
+                return await itx.response.send_message("沒有權限。", ephemeral=True)
+            cur = await self.cog.current_round(self.tid)
+            if not cur:
+                return await itx.response.send_message("目前沒有進行中的輪次。", ephemeral=True)
+            rid, rno, status = cur
+            if rno != 1 or status != "ongoing":
+                return await itx.response.send_message("僅第一輪進行中可使用此功能。", ephemeral=True)
+
+            m = await self.cog._resolve_member(itx.guild, str(self.who))
+            if not m:
+                return await itx.response.send_message("找不到該成員。", ephemeral=True)
+
+            # 加入或恢復
+            status = await self.cog.add_player(self.tid, m, active=1)
+            if status == "banned":
+                return await itx.response.send_message("該成員已被封禁，無法加入。", ephemeral=True)
+
+            # 砍掉 R1 對局，重抽
+            async with self.cog.db() as conn:
+                await conn.execute("DELETE FROM match_player_meta WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)", (rid,))
+                await conn.execute("DELETE FROM matches WHERE round_id=?", (rid,))
+                await conn.commit()
+
+            await itx.channel.send(f"⚠️ 第一輪重新配對：因新增 {m.display_name}（{str(self.note) or '無備註'}）。")
+            await self.cog._audit(self.tid, itx.user.id, "admin_add_and_reseat_r1", f"add_uid={m.id}, note={self.note}")
+            await self.cog._pair_and_post(itx.channel, self.tid, rid)
+            await itx.response.send_message("已加入並重新配對第一輪。", ephemeral=True)
+
 
     class _SetWinnerModal(discord.ui.Modal, title="指定桌勝者（當前輪）"):
         table_no = discord.ui.TextInput(label="桌號（數字）", required=True)
@@ -850,58 +941,6 @@ class SwissAll(commands.Cog):
                 f"- {mA.display_name}：桌 {tnoA} → {tnoB}\n"
                 f"- {mB.display_name}：桌 {tnoB} → {tnoA}",
                 ephemeral=True
-            )
-
-    class _SwapOppModal(discord.ui.Modal, title="黑箱換對手（交換兩位玩家所屬對局中的位置）"):
-        a_text = discord.ui.TextInput(label="玩家A（@提及 / ID / 名稱）", required=True)
-        b_text = discord.ui.TextInput(label="玩家B（@提及 / ID / 名稱）", required=True)
-        note   = discord.ui.TextInput(label="原因/備註（可留空）", style=discord.TextStyle.paragraph, required=False)
-        def __init__(self, cog: 'SwissAll', tid: int):
-            super().__init__(); self.cog = cog; self.tid = tid
-        async def on_submit(self, itx: discord.Interaction):
-            if not await self.cog._is_organizer_user(self.tid, itx.user):
-                return await itx.response.send_message("沒有權限。", ephemeral=True)
-            cur = await self.cog.current_round(self.tid)
-            if not cur: return await itx.response.send_message("目前沒有進行中的輪次。", ephemeral=True)
-            rid, _, _ = cur
-            mA = await self.cog._resolve_member(itx.guild, str(self.a_text))
-            mB = await self.cog._resolve_member(itx.guild, str(self.b_text))
-            if not mA or not mB:
-                return await itx.response.send_message("找不到其中一位成員。", ephemeral=True)
-            pidA = await self.cog._player_pid_by_user(self.tid, mA.id)
-            pidB = await self.cog._player_pid_by_user(self.tid, mB.id)
-            if not pidA or not pidB:
-                return await itx.response.send_message("兩位都必須在本賽事名單內。", ephemeral=True)
-            mrowA = await self.cog._find_match_by_pid(rid, pidA)
-            mrowB = await self.cog._find_match_by_pid(rid, pidB)
-            if not mrowA or not mrowB:
-                return await itx.response.send_message("其中一位目前沒有對局。", ephemeral=True)
-            (midA, tnoA, p1A, p2A, resA), (midB, tnoB, p1B, p2B, resB) = mrowA, mrowB
-            if (resA is not None) or (resB is not None):
-                return await itx.response.send_message("有一桌已回報完成，無法換對手。", ephemeral=True)
-            # 找出 A/B 分別是各自對局的哪一側
-            def side(pid, p1, p2): return "p1" if pid == p1 else ("p2" if pid == p2 else None)
-            sideA = side(pidA, p1A, p2A); sideB = side(pidB, p1B, p2B)
-            if not sideA or not sideB:
-                return await itx.response.send_message("A 或 B 不在其對局中。", ephemeral=True)
-
-            # 交換：把 midA 的 A 換成 B；把 midB 的 B 換成 A
-            async with self.cog.db() as conn:
-                if sideA == "p1":
-                    await conn.execute("UPDATE matches SET p1_id=? WHERE id=?", (pidB, midA))
-                else:
-                    await conn.execute("UPDATE matches SET p2_id=? WHERE id=?", (pidB, midA))
-                if sideB == "p1":
-                    await conn.execute("UPDATE matches SET p1_id=? WHERE id=?", (pidA, midB))
-                else:
-                    await conn.execute("UPDATE matches SET p2_id=? WHERE id=?", (pidA, midB))
-                await conn.commit()
-
-            await self.cog._audit(self.tid, itx.user.id, "admin_swap_opponents",
-                                  f"A={mA.id}(mid={midA},t={tnoA}) <-> B={mB.id}(mid={midB},t={tnoB}); note={self.note}")
-            await itx.response.send_message(
-                f"已交換對手：\n"
-                f"- {mA.display_name} 與 {mB.display_name} 已交換所屬對局位置。", ephemeral=True
             )
 
     class _BanModal(discord.ui.Modal, title="封禁"):
@@ -1066,21 +1105,12 @@ class SwissAll(commands.Cog):
             await itx.channel.send("報名/退出/退賽面板：", view=self.cog.RegView(self.cog, self.tid))
             await itx.response.send_message("已發送報名面板（公開）。", ephemeral=True)
 
-        @discord.ui.button(label="我的成績(私訊)", style=discord.ButtonStyle.secondary, custom_id="swiss:mebtn")
-        async def btn_me(self, itx: discord.Interaction, button: discord.ui.Button):
-            await self.cog.ui_show_me(itx, self.tid, itx.user)
-
         # --- Roster & Registration management ---
         @discord.ui.button(label="查看名單", style=discord.ButtonStyle.secondary, custom_id="swiss:roster")
         async def btn_roster(self, itx: discord.Interaction, _):
-            if not await self._adm(itx): return
-            players = await self.cog.fetch_players(self.tid, active_only=False)
-            lines = []
-            for p in players:
-                tag = "✅" if p.active else "❌"
-                lines.append(f"{tag} {p.display_name} (uid={p.user_id}) 分數={p.score}")
-            text = "\n".join(lines) if lines else "（目前沒有人）"
-            await itx.response.send_modal(self.cog._RosterModal(self.cog, self.tid, text))
+            if not await self._adm(itx): 
+                return
+            await self.cog._open_roster_safely(itx, self.tid)
 
         @discord.ui.button(label="手動加入/恢復", style=discord.ButtonStyle.success, custom_id="swiss:add")
         async def btn_add(self, itx: discord.Interaction, _):
@@ -1091,6 +1121,12 @@ class SwissAll(commands.Cog):
         async def btn_dropmanual(self, itx: discord.Interaction, _):
             if not await self._adm(itx): return
             await itx.response.send_modal(self.cog._ManualDropModal(self.cog, self.tid))
+        
+        @discord.ui.button(label="第一輪加人並重抽", style=discord.ButtonStyle.secondary, custom_id="swiss:r1_add_repair")
+        async def btn_r1_add_repair(self, itx: discord.Interaction, _):
+            if not await self._adm(itx): return
+            await itx.response.send_modal(self.cog._AddAndReseatR1Modal(self.cog, self.tid))
+
 
         # --- Pairing management ---
         @discord.ui.button(label="指定桌勝者", style=discord.ButtonStyle.primary, custom_id="swiss:setwinner")
@@ -1102,11 +1138,12 @@ class SwissAll(commands.Cog):
         async def btn_swaptable(self, itx: discord.Interaction, _):
             if not await self._adm(itx): return
             await itx.response.send_modal(self.cog._SwapTableModal(self.cog, self.tid))
-
-        @discord.ui.button(label="黑箱換對手（交換位置）", style=discord.ButtonStyle.primary, custom_id="swiss:swapopp")
-        async def btn_swapopp(self, itx: discord.Interaction, _):
+            
+        @discord.ui.button(label="黑箱換對手", style=discord.ButtonStyle.primary, custom_id="swiss:bulk_swap")
+        async def btn_bulk_swap(self, itx: discord.Interaction, _):
             if not await self._adm(itx): return
-            await itx.response.send_modal(self.cog._SwapOppModal(self.cog, self.tid))
+            await itx.response.send_modal(self.cog._BulkSwapStartModal(self.cog, self.tid))
+
 
         # --- Ban tools ---
         @discord.ui.button(label="封禁", style=discord.ButtonStyle.danger, custom_id="swiss:ban")
@@ -1148,20 +1185,30 @@ class SwissAll(commands.Cog):
 
         @discord.ui.button(label="測試：隨機結算本輪", style=discord.ButtonStyle.danger, custom_id="swiss:test:simulate")
         async def btn_test_simulate(self, itx: discord.Interaction, _):
-            if not await self._adm(itx): return
+            if not await self._adm(itx):
+                return
+            # 1) 先 ack，後面一律 followup
+            if not itx.response.is_done():
+                await itx.response.defer(ephemeral=True)
+
             tid = self.tid
             cur = await self.cog.current_round(tid)
             if not cur:
-                return await itx.response.send_message("沒有進行中的輪次。", ephemeral=True)
+                return await itx.followup.send("沒有進行中的輪次。", ephemeral=True)
+
             rid, _rno, _status = cur
             rows = await self.cog.list_matches_round(rid)
             any_done = False
+
             for mid, tno, p1, p2, res, _ in rows:
                 if res is not None or p1 is None or p2 is None:
                     continue
+
                 await self.cog._test_fill_for_match(mid, p1, p2)
+
                 winner_pid = p1 if random.random() < 0.5 else p2
                 result = "p1" if winner_pid == p1 else "p2"
+
                 ok, _ = await self.cog.set_match_result_atomic(mid, result, winner_pid)
                 if ok:
                     await self.cog.update_score_for_match(tid, p1, p2, result, winner_pid)
@@ -1172,10 +1219,20 @@ class SwissAll(commands.Cog):
                     loser_name  = name2 if result == "p1" else name1
                     await itx.channel.send(f"桌 {tno}：{winner_name} 勝 {loser_name}(match {mid})")
                     any_done = True
+
             if not any_done:
-                return await itx.response.send_message("沒有可模擬的對局（可能都是 BYE 或已回報）。", ephemeral=True)
+                # ★ 這裡改成 followup
+                return await itx.followup.send("沒有可模擬的對局（可能都是 BYE 或已回報）。", ephemeral=True)
+
             await itx.followup.send("已隨機完成回報並公告。檢查是否可結束本輪…", ephemeral=True)
             await self.cog._maybe_on_round_complete(tid, rid, itx.channel)
+            
+        @discord.ui.button(label="刪除賽事（雙重確認）", style=discord.ButtonStyle.danger, custom_id="swiss:delete_tour")
+        async def btn_delete_tour(self, itx: discord.Interaction, _):
+            if not await self._adm(itx): return
+            await itx.response.send_modal(self.cog._DeleteTournamentModal(self.cog, self.tid))
+
+
 
     class BootView(discord.ui.View):
         """尚未建立賽事時顯示的前置面板（任何人都可建立）。"""
@@ -1638,8 +1695,281 @@ class SwissAll(commands.Cog):
             "－ 一般選手請使用公開的報名面板進行報名/退賽。",
             view=self.OpenPanelView(self, tid)
         )
+    # ---------- Bulk swap helpers ----------
+    async def _clear_match_state(self, match_id: int):
+        """清空對局的回報與職業資訊"""
+        async with self.db() as conn:
+            await conn.execute(
+                "UPDATE matches SET result=NULL, winner_player_id=NULL, notes=COALESCE(notes,'') || ';ADMIN:swap_override' WHERE id=?",
+                (match_id,)
+            )
+            await conn.execute("DELETE FROM match_player_meta WHERE match_id=?", (match_id,))
+            await conn.commit()
 
+    async def _collect_opponent_history(self, tid: int) -> Dict[int, set]:
+        """回傳 {pid: set(對手pid)}（不含 BYE）"""
+        history: Dict[int, set] = {}
+        async with self.db() as conn:
+            async with conn.execute(
+                "SELECT p1_id, p2_id FROM matches WHERE tournament_id=? AND p1_id IS NOT NULL AND p2_id IS NOT NULL",
+                (tid,)
+            ) as cur:
+                for p1, p2 in await cur.fetchall():
+                    history.setdefault(p1, set()).add(p2)
+                    history.setdefault(p2, set()).add(p1)
+        return history
 
+    def _pair_bucket_avoid_repeats(self, bucket: List[PlayerRow], history: Dict[int, set]) -> List[Tuple[Optional[PlayerRow], Optional[PlayerRow]]]:
+        """同分 bucket 內盡量避免重複對戰；退化時允許重複。"""
+        pool = bucket[:]
+        random.shuffle(pool)
+        pairs: List[Tuple[Optional[PlayerRow], Optional[PlayerRow]]] = []
+
+        # 先盡量找『彼此沒對過』的配對
+        used = set()
+        for i, a in enumerate(pool):
+            if a.id in used: 
+                continue
+            best_j = None
+            random_indices = [j for j in range(i+1, len(pool)) if pool[j].id not in used]
+            random.shuffle(random_indices)
+            for j in random_indices:
+                b = pool[j]
+                if b.id in used:
+                    continue
+                if b.id not in history.get(a.id, set()) and a.id not in history.get(b.id, set()):
+                    best_j = j
+                    break
+            if best_j is not None:
+                pairs.append((a, pool[best_j]))
+                used.add(a.id); used.add(pool[best_j].id)
+
+        # 把剩下沒配到的（可能需要重複對戰）
+        leftovers = [p for p in pool if p.id not in used]
+        random.shuffle(leftovers)
+        while len(leftovers) >= 2:
+            pairs.append((leftovers.pop(), leftovers.pop()))
+        if leftovers:
+            pairs.append((leftovers.pop(), None))  # BYE 候選，留給外層處理
+        return pairs
+
+    class _BulkSwapStartModal(discord.ui.Modal, title="黑箱換對手—選桌號"):
+        tables = discord.ui.TextInput(label="桌號（逗號或空白分隔）", placeholder="例如：1,2  或  3 5 8", required=True)
+        def __init__(self, cog: 'SwissAll', tid: int):
+            super().__init__(); self.cog = cog; self.tid = tid
+        async def on_submit(self, itx: discord.Interaction):
+            if not await self.cog._is_organizer_user(self.tid, itx.user):
+                return await itx.response.send_message("沒有權限。", ephemeral=True)
+            cur = await self.cog.current_round(self.tid)
+            if not cur:
+                return await itx.response.send_message("目前沒有進行中的輪次。", ephemeral=True)
+            rid, _, _ = cur
+            raw = str(self.tables).replace(",", " ").split()
+            tnos = []
+            for tok in raw:
+                try: tnos.append(int(tok))
+                except: ...
+            if not tnos:
+                return await itx.response.send_message("請輸入有效桌號。", ephemeral=True)
+
+            # 抓本輪所有對局資訊
+            async with self.cog.db() as conn:
+                async with conn.execute(
+                    "SELECT id, table_no, p1_id, p2_id, result FROM matches WHERE round_id=? ORDER BY table_no",
+                    (rid,)
+                ) as cur2:
+                    rows = await cur2.fetchall()
+
+            by_table = {t: r for (r, t) in [((mid, tno, p1, p2, res), tno) for (mid, tno, p1, p2, res) in rows]}
+            targets = [by_table.get(t) for t in tnos if t in by_table]
+            if not targets:
+                return await itx.response.send_message("找不到任何指定桌。", ephemeral=True)
+
+            # 候選名單：本輪所有有對局且非 None 的 PID
+            candidates = []
+            for mid, tno, p1, p2, res in rows:
+                if p1: candidates.append(p1)
+                if p2: candidates.append(p2)
+            candidates = list(dict.fromkeys(candidates))  # 去重
+
+            # 映射 pid -> name
+            names = {}
+            async with self.cog.db() as conn:
+                for pid in candidates:
+                    async with conn.execute("SELECT display_name FROM players WHERE id=?", (pid,)) as c:
+                        r = await c.fetchone()
+                        names[pid] = r[0] if r else str(pid)
+
+            view = self.cog.BulkSwapView(self.cog, self.tid, rid, targets, candidates, names)
+            await itx.response.send_message("黑箱換對手：請選擇每桌左右兩側的新玩家（預設不變）。", view=view, ephemeral=True)
+
+    class BulkSwapView(discord.ui.View):
+        def __init__(self, cog: 'SwissAll', tid: int, rid: int, targets: List[Tuple[int,int,Optional[int],Optional[int],Optional[str]]], candidates: List[int], names: Dict[int,str]):
+            super().__init__(timeout=300)
+            self.cog = cog; self.tid = tid; self.rid = rid
+            self.targets = targets
+            self.candidates = candidates
+            self.names = names
+            # 生成每桌兩個 Select（左/右）
+            for mid, tno, p1, p2, res in targets:
+                # 左側
+                options_left = [discord.SelectOption(label="不變", value=f"KEEP")]
+                options_right = [discord.SelectOption(label="不變", value=f"KEEP")]
+                for pid in candidates:
+                    # 排除同桌另一側避免同人同桌雙位
+                    if pid == p2:
+                        continue
+                    options_left.append(discord.SelectOption(label=self.names.get(pid, str(pid)), value=f"{pid}"))
+                for pid in candidates:
+                    if pid == p1:
+                        continue
+                    options_right.append(discord.SelectOption(label=self.names.get(pid, str(pid)), value=f"{pid}"))
+
+                sel_l = discord.ui.Select(placeholder=f"桌 {tno} 左位（原 {self.names.get(p1,'?') if p1 else '空'}）", options=options_left, custom_id=f"bulk:l:{mid}:{tno}")
+                sel_r = discord.ui.Select(placeholder=f"桌 {tno} 右位（原 {self.names.get(p2,'?') if p2 else '空'}）", options=options_right, custom_id=f"bulk:r:{mid}:{tno}")
+                self.add_item(sel_l); self.add_item(sel_r)
+
+            self.add_item(discord.ui.Button(label="提交變更", style=discord.ButtonStyle.primary, custom_id="bulk:submit"))
+
+        async def interaction_check(self, itx: discord.Interaction) -> bool:
+            if not await self.cog._is_organizer_user(self.tid, itx.user):
+                await itx.response.send_message("沒有權限。", ephemeral=True)
+                return False
+            return True
+
+        @discord.ui.button(label="提交變更", style=discord.ButtonStyle.primary, custom_id="bulk:submit_hidden")
+        async def _hidden_submit_button(self, *_): pass  # 不展示，靠 add_item 的 Button
+
+        async def on_timeout(self):
+            # 可選：做點清理
+            pass
+
+        async def interaction_check_and_submit(self, itx: discord.Interaction):
+            pass
+
+        async def on_submit_clicked(self, itx: discord.Interaction):
+            # 收集所有選取值
+            selections = {}
+            for child in self.children:
+                if isinstance(child, discord.ui.Select):
+                    # custom_id 格式：bulk:<side>:<mid>:<tno>
+                    parts = (child.custom_id or "").split(":")
+                    if len(parts) != 4: 
+                        continue
+                    _, side, mid, tno = parts
+                    mid = int(mid); tno = int(tno)
+                    val = child.values[0] if child.values else "KEEP"
+                    selections.setdefault(mid, {"tno": tno, "l": "KEEP", "r": "KEEP"})
+                    if side == "l":
+                        selections[mid]["l"] = val
+                    else:
+                        selections[mid]["r"] = val
+
+            # 驗證 & 轉為最終配置
+            plans = []  # [(mid, tno, new_p1, new_p2)]
+            used = set()
+            # 先讀舊值
+            old_map = {}
+            async with self.cog.db() as conn:
+                for mid in selections.keys():
+                    async with conn.execute("SELECT p1_id,p2_id FROM matches WHERE id=?", (mid,)) as c:
+                        r = await c.fetchone()
+                    if not r:
+                        return await itx.response.send_message(f"找不到 match {mid}。", ephemeral=True)
+                    old_map[mid] = (r[0], r[1])
+
+            for mid, info in selections.items():
+                old_p1, old_p2 = old_map[mid]
+                new_p1 = old_p1 if info["l"] == "KEEP" else int(info["l"])
+                new_p2 = old_p2 if info["r"] == "KEEP" else int(info["r"])
+                # 同桌雙位不得相同
+                if new_p1 and new_p2 and new_p1 == new_p2:
+                    return await itx.response.send_message(f"桌 {info['tno']} 左右位重複。", ephemeral=True)
+                plans.append((mid, info["tno"], new_p1, new_p2))
+                for pid in (new_p1, new_p2):
+                    if not pid: 
+                        continue
+                    key = (pid,)
+                    # 跨桌重複（每人最多一桌）
+                    if key in used:
+                        return await itx.response.send_message("同一玩家被安排到多桌，請修正後再提交。", ephemeral=True)
+                    used.add(key)
+
+            # 進行提交
+            await itx.response.defer(ephemeral=True)
+            changed = await self.cog._bulk_swap_commit(self.tid, self.rid, plans, itx.user.id)
+            msg_lines = ["黑箱換對手完成：" if changed else "沒有變更。"]
+            for mid, tno, p1, p2 in plans:
+                n1 = self.names.get(p1, "空") if p1 else "空"
+                n2 = self.names.get(p2, "空") if p2 else "空"
+                msg_lines.append(f"桌 {tno}: {n1} vs {n2} (match {mid})")
+            await itx.followup.send("\n".join(msg_lines), ephemeral=True)
+
+        async def on_error(self, error: Exception, item, interaction: discord.Interaction):
+            await interaction.followup.send(f"發生錯誤：{error}", ephemeral=True)
+
+        @discord.ui.button(label="提交變更", style=discord.ButtonStyle.primary, custom_id="bulk:submit")
+        async def submit_btn(self, itx: discord.Interaction, _):
+            await self.on_submit_clicked(itx)
+
+    async def _bulk_swap_commit(self, tid: int, rid: int, plans: List[Tuple[int,int,Optional[int],Optional[int]]], actor_uid: int) -> bool:
+        """
+        plans: list of (mid, tno, new_p1, new_p2)
+        - 強制清空結果與 meta
+        - 重新計分
+        """
+        async with self._lock:
+            changed = False
+            async with self.db() as conn:
+                await conn.execute("BEGIN")
+                try:
+                    for mid, _tno, np1, np2 in plans:
+                        # 寫入新兩側
+                        await conn.execute("UPDATE matches SET p1_id=?, p2_id=? WHERE id=?", (np1, np2, mid))
+                        # 強制清空回報與職業
+                        await conn.execute("UPDATE matches SET result=NULL, winner_player_id=NULL, notes=COALESCE(notes,'') || ';ADMIN:swap_override' WHERE id=?", (mid,))
+                        await conn.execute("DELETE FROM match_player_meta WHERE match_id=?", (mid,))
+                        changed = True
+                    await conn.commit()
+                except Exception:
+                    await conn.execute("ROLLBACK")
+                    raise
+
+        if changed:
+            await self.recompute_scores(tid)
+            # 審計
+            payload = ";".join([f"mid={mid},p1={np1},p2={np2}" for (mid, _tno, np1, np2) in plans])
+            await self._audit(tid, actor_uid, "admin_bulk_swap", payload)
+        return changed
+
+    class _DeleteTournamentModal(discord.ui.Modal, title="刪除賽事（不可復原）"):
+        confirm1 = discord.ui.TextInput(label="請輸入 DELETE 以確認", required=True)
+        confirm2 = discord.ui.TextInput(label="請再次輸入 DELETE", required=True)
+        def __init__(self, cog: 'SwissAll', tid: int):
+            super().__init__(); self.cog = cog; self.tid = tid
+        async def on_submit(self, itx: discord.Interaction):
+            if not await self.cog._is_organizer_user(self.tid, itx.user):
+                return await itx.response.send_message("沒有權限。", ephemeral=True)
+            if str(self.confirm1).strip() != "DELETE" or str(self.confirm2).strip() != "DELETE":
+                return await itx.response.send_message("確認字串錯誤，已取消。", ephemeral=True)
+
+            async with self.cog.db() as conn:
+                await conn.execute("BEGIN")
+                try:
+                    await conn.execute("DELETE FROM match_player_meta WHERE match_id IN (SELECT id FROM matches WHERE tournament_id=?)", (self.tid,))
+                    await conn.execute("DELETE FROM matches WHERE tournament_id=?", (self.tid,))
+                    await conn.execute("DELETE FROM rounds WHERE tournament_id=?", (self.tid,))
+                    await conn.execute("DELETE FROM tournament_bans WHERE tournament_id=?", (self.tid,))
+                    await conn.execute("DELETE FROM audit_logs WHERE tournament_id=?", (self.tid,))
+                    await conn.execute("DELETE FROM players WHERE tournament_id=?", (self.tid,))
+                    await conn.execute("DELETE FROM tournaments WHERE id=?", (self.tid,))
+                    await conn.commit()
+                except Exception:
+                    await conn.execute("ROLLBACK")
+                    raise
+
+            await self.cog._audit(self.tid, itx.user.id, "admin_delete_tournament", "DELETE")
+            await itx.response.send_message("賽事已刪除。", ephemeral=True)
 
 # ---------- setup ----------
 async def setup(bot: commands.Bot):
