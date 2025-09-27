@@ -48,6 +48,9 @@ class SwissExtras(commands.Cog):
         self._ready = False
         self._lock = asyncio.Lock()
 
+    async def cog_load(self):
+        await self.setup_db()
+
     # ---------- common helpers ----------
     def db(self):
         return aiosqlite.connect(DB_PATH)
@@ -57,6 +60,14 @@ class SwissExtras(commands.Cog):
             await itx.response.send_message(content, ephemeral=True, **kwargs)
         else:
             await itx.followup.send(content, ephemeral=True, **kwargs)
+
+    async def fetch_tournaments_overview(self, guild_id: int):
+        async with self.db() as conn:
+            async with conn.execute(
+                "SELECT id,name,status,created_at,finished_at,archived FROM tournaments WHERE guild_id=? ORDER BY id DESC",
+                (guild_id,)
+            ) as cur:
+                return await cur.fetchall()
 
     # ---------- DB setup (base tables + dynamic seasons) ----------
     async def setup_db(self):
@@ -147,6 +158,15 @@ class SwissExtras(commands.Cog):
                     "INSERT INTO seasons(slug,name,start_ts,end_ts) VALUES(?,?,?,NULL)",
                     ("s3", "第三期", s3_start)
                 )
+
+            try:
+                await conn.execute("ALTER TABLE tournaments ADD COLUMN finished_at INTEGER")
+            except Exception:
+                pass
+            try:
+                await conn.execute("ALTER TABLE tournaments ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
 
             await conn.commit()
         self._ready = True
@@ -1005,6 +1025,29 @@ class SwissExtras(commands.Cog):
                 ephemeral=True
             )
 
+        @discord.ui.button(label="查看賽事列表", style=discord.ButtonStyle.secondary, custom_id="swissx:open:tournaments")
+        async def btn_list_tournaments(self, itx: discord.Interaction, _):
+            await self.cog.setup_db()
+            rows = await self.cog.fetch_tournaments_overview(itx.guild.id)
+            if not rows:
+                return await self.cog._send_ephemeral(itx, "目前沒有賽事紀錄。")
+            display_lines = []
+            for tid, name, status, created_at, finished_at, archived in rows:
+                created = dt.datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "-"
+                finished = dt.datetime.fromtimestamp(finished_at).strftime("%Y-%m-%d %H:%M") if finished_at else "-"
+                flags = []
+                if archived:
+                    flags.append("archived")
+                entry = f"#{tid} {created} {name} [{status}]"
+                if finished != "-":
+                    entry += f" -> {finished}"
+                if flags:
+                    entry += " (" + ", ".join(flags) + ")"
+                display_lines.append(entry)
+            output = "\n".join(display_lines)
+            for start in range(0, len(output), 1800):
+                await self.cog._send_ephemeral(itx, output[start:start + 1800])
+
         @discord.ui.button(label="開啟存檔管理（管理員）", style=discord.ButtonStyle.secondary, custom_id="swissx:open:adm")
         async def btn_admpanel(self, itx, _):
             await self.cog.setup_db()
@@ -1171,24 +1214,28 @@ class SwissExtras(commands.Cog):
     async def render_standings_image_rows(self, rows: List[Dict[str, any]]) -> Optional[discord.File]:
         headers = ["Pos", "Player", "Pts", "MWP", "OppMW", "OPPT1"]
         table = [[r["Pos"], r["Player"], r["Pts"], r["MWP"], r["OppMW"], r["OPPT1"]] for r in rows]
-        try:
-            import os, io
+        if not table:
+            return None
+
+        def _render_table_bytes():
+            import os
             import matplotlib
+            matplotlib.use("Agg", force=True)
             import matplotlib.pyplot as plt
             from matplotlib import font_manager
+
             matplotlib.rcParams["axes.unicode_minus"] = False
 
             def _pick_cjk_font():
                 env_path = os.getenv("SWISS_CJK_FONT")
                 if env_path and os.path.isfile(env_path):
                     return font_manager.FontProperties(fname=env_path)
-                candidates = [
-                    "Microsoft JhengHei","Microsoft YaHei","SimHei","PMingLiU","MingLiU",
-                    "PingFang TC","PingFang SC","Hiragino Sans",
-                    "Noto Sans CJK TC","Noto Sans CJK SC","Noto Sans CJK JP",
-                    "Noto Sans TC","Source Han Sans TW","Source Han Sans SC","Source Han Sans JP",
-                ]
-                for name in candidates:
+                for name in [
+                    "Microsoft JhengHei", "Microsoft YaHei", "SimHei", "PMingLiU", "MingLiU",
+                    "PingFang TC", "PingFang SC", "Hiragino Sans",
+                    "Noto Sans CJK TC", "Noto Sans CJK SC", "Noto Sans CJK JP",
+                    "Noto Sans TC", "Source Han Sans TW", "Source Han Sans SC", "Source Han Sans JP",
+                ]:
                     try:
                         path = font_manager.findfont(name, fallback_to_default=False)
                         if os.path.isfile(path):
@@ -1201,17 +1248,27 @@ class SwissExtras(commands.Cog):
             fig, ax = plt.subplots(figsize=(10, min(0.6 * max(4, len(table)), 20)))
             ax.axis("off")
             tbl = ax.table(cellText=table, colLabels=headers, cellLoc="center", loc="upper left")
-            tbl.auto_set_font_size(False); tbl.set_fontsize(9); tbl.scale(1, 1.2)
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(9)
+            tbl.scale(1, 1.2)
             for cell in tbl.get_celld().values():
                 cell.get_text().set_fontproperties(fp)
 
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
-            plt.close(fig); buf.seek(0)
-            return discord.File(buf, filename="standings_today.png")
+            plt.close(fig)
+            return buf.getvalue()
+
+        try:
+            image_bytes = await asyncio.to_thread(_render_table_bytes)
         except Exception:
             return None
-        
+
+        if not image_bytes:
+            return None
+
+        return discord.File(io.BytesIO(image_bytes), filename="standings_today.png")
+
     async def _post_final_table_for_tid(self, itx: discord.Interaction, tid: int, title: str):
         """用 swissx 的算法（排除決賽/季軍戰）繪出圖片並公開貼到頻道。"""
         rows = await self.compute_standings_excl_finals(tid, active_only=False)

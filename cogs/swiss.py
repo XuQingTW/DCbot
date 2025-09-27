@@ -37,7 +37,7 @@ import aiosqlite
 import discord
 from discord.ext import commands
 
-from src.swiss_src import SwissSrc
+from cogs.src.swiss_src import SwissSrc
 
 
 DB_PATH = "swiss.db"
@@ -66,6 +66,9 @@ class SwissAll(commands.Cog, SwissSrc):
         self._ready = False
         self._lock = asyncio.Lock()
 
+    async def cog_load(self):
+        await self.setup_db()
+
     # -------------- DB --------------
     def db(self):
         # return async context manager (aiosqlite.connect)
@@ -85,7 +88,9 @@ class SwissAll(commands.Cog, SwissSrc):
                     status TEXT NOT NULL DEFAULT 'init',
                     reg_message_id INTEGER,
                     organizer_id INTEGER,
-                    created_at INTEGER NOT NULL
+                    created_at INTEGER NOT NULL,
+                    finished_at INTEGER,
+                    archived INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS players (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,6 +176,15 @@ class SwissAll(commands.Cog, SwissSrc):
             except Exception:
                 pass
 
+            try:
+                await conn.execute("ALTER TABLE tournaments ADD COLUMN finished_at INTEGER")
+            except Exception:
+                pass
+            try:
+                await conn.execute("ALTER TABLE tournaments ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
+
             await conn.commit()
         self._ready = True
 
@@ -221,6 +235,20 @@ class SwissAll(commands.Cog, SwissSrc):
             async with conn.execute(q, (tid,)) as cur:
                 rows = await cur.fetchall()
                 return [PlayerRow(*r) for r in rows]
+
+    async def fetch_player_names(self, pids: List[int]) -> Dict[int, str]:
+        ids = [int(pid) for pid in pids if pid]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        query = f"SELECT id, display_name FROM players WHERE id IN ({placeholders})"
+        async with self.db() as conn:
+            async with conn.execute(query, ids) as cur:
+                rows = await cur.fetchall()
+        mapping = {int(pid): name for pid, name in rows}
+        for pid in ids:
+            mapping.setdefault(pid, str(pid))
+        return mapping
 
     async def create_round(self, tid: int) -> int:
         async with self.db() as conn:
@@ -1260,25 +1288,30 @@ class SwissAll(commands.Cog, SwissSrc):
             [r["Pos"], r["Player"], r["Pts"], r["MWP"], r["OppMW"], round(r.get("OPPT1", 0.0), 4)]
             for r in rows
         ]
-        try:
+
+        if not table:
+            await channel.send("There is no standings data to render.")
+            return None
+
+        def _render_table_bytes():
             import os
             import matplotlib
+            matplotlib.use("Agg", force=True)
             import matplotlib.pyplot as plt
             from matplotlib import font_manager
 
             matplotlib.rcParams["axes.unicode_minus"] = False
 
-            def _pick_cjk_font() -> "matplotlib.font_manager.FontProperties":
+            def _pick_cjk_font():
                 env_path = os.getenv("SWISS_CJK_FONT")
                 if env_path and os.path.isfile(env_path):
                     return font_manager.FontProperties(fname=env_path)
-                candidates = [
+                for name in [
                     "Microsoft JhengHei", "Microsoft YaHei", "SimHei", "PMingLiU", "MingLiU",
                     "PingFang TC", "PingFang SC", "Hiragino Sans",
                     "Noto Sans CJK TC", "Noto Sans CJK SC", "Noto Sans CJK JP",
                     "Noto Sans TC", "Source Han Sans TW", "Source Han Sans SC", "Source Han Sans JP",
-                ]
-                for name in candidates:
+                ]:
                     try:
                         path = font_manager.findfont(name, fallback_to_default=False)
                         if os.path.isfile(path):
@@ -1291,23 +1324,32 @@ class SwissAll(commands.Cog, SwissSrc):
             fig, ax = plt.subplots(figsize=(10, min(0.6 * max(4, len(table)), 20)))
             ax.axis("off")
             tbl = ax.table(cellText=table, colLabels=headers, cellLoc="center", loc="upper left")
-            tbl.auto_set_font_size(False); tbl.set_fontsize(9); tbl.scale(1, 1.2)
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(9)
+            tbl.scale(1, 1.2)
             for cell in tbl.get_celld().values():
                 cell.get_text().set_fontproperties(fp)
+
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
             plt.close(fig)
-            buf.seek(0)
-            return discord.File(buf, filename="standings.png")
+            return buf.getvalue()
+
+        try:
+            image_bytes = await asyncio.to_thread(_render_table_bytes)
         except Exception:
-            lines = ["目前積分：", "```"]
-            lines.append("\t".join(headers))
-            for row in table:
-                lines.append("\t".join(str(x) for x in row))
-            lines.append("```")
-            for ck in chunk_text("\n".join(lines)):
-                await channel.send(ck)
-            return None
+            image_bytes = None
+
+        if image_bytes:
+            return discord.File(io.BytesIO(image_bytes), filename="standings.png")
+
+        lines = ["Standings:", "```", "	".join(headers)]
+        for row in table:
+            lines.append("	".join(str(x) for x in row))
+        lines.append("```")
+        for chunk in chunk_text("\n".join(lines)):
+            await channel.send(chunk)
+        return None
 
     # -------------- Round complete hook --------------
     async def _maybe_on_round_complete(self, tid: int, rid: int, channel: discord.abc.Messageable):
@@ -1637,13 +1679,8 @@ class SwissAll(commands.Cog, SwissSrc):
                 if p2: candidates.append(p2)
             candidates = list(dict.fromkeys(candidates))  # 去重
 
-            # 映射 pid -> name
-            names = {}
-            async with self.cog.db() as conn:
-                for pid in candidates:
-                    async with conn.execute("SELECT display_name FROM players WHERE id=?", (pid,)) as c:
-                        r = await c.fetchone()
-                        names[pid] = r[0] if r else str(pid)
+            # 查詢 pid -> name
+            names = await self.cog.fetch_player_names(candidates)
 
             view = self.cog.BulkSwapView(self.cog, self.tid, rid, targets, candidates, names)
             await itx.response.send_message("黑箱換對手：請選擇每桌左右兩側的新玩家（預設不變）。", view=view, ephemeral=True)
