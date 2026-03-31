@@ -47,8 +47,8 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix='!',intents = intents)
 bot.remove_command('help')
 voice_clients = {}
-directory_to_scan = r"D:\家龢用\音樂"
-directory_steam = r"D:\SteamLibrary\steamapps\music"
+directory_to_scan = None
+directory_steam = None
 
 warning_send = bot.get_channel(1233692654210912389)
 
@@ -252,10 +252,9 @@ async def youtube(ctx,vc,url):
         await playing_music(ctx,vc)
 
 async def show_steam_music(ctx,vc,set):
-    """顯示steam上的音樂"""
-    music = scan_music_files(r"D:\SteamLibrary\steamapps\music")
-    #輸出music路徑內的資料夾名稱
-    i = os.listdir(music)
+    """顯示steam上的音樂（已停用）"""
+    await ctx.send("已停用 Steam 音樂資料夾功能")
+    return
     
 
 @bot.command()
@@ -266,19 +265,12 @@ async def thpynno(ctx):
 
 @bot.command()
 async def special(ctx):
-    song = r"D:\SteamLibrary\steamapps\music\100% Orange Juice - Character Song Pack Ultimate Weapon Girl\Ultimate Weapon Girl - Character Song Pack OST\Track 5 - Ultimate Weapon Girl (Bonus Track).mp3"
-    if ctx.guild.id in voice_clients:
-        vc = voice_clients[ctx.guild.id]["vc"]
-        vc.play(discord.FFmpegPCMAudio(song))
-        song_name = os.path.basename(song)
-        await ctx.send(f'Now playing: ??????????????????????????????????????????')
-    else:
-        await ctx.send('Not in a voice channel.')
+    await ctx.send('已停用本地 Steam 音樂功能')
 
 async def play_steam_music(ctx,vc,set):
-    """播放steam上的音樂"""
-    music = scan_music_files(r"D:\SteamLibrary\steamapps\music")
-    #掃描所有音樂
+    """播放steam上的音樂（已停用）"""
+    await ctx.send("已停用 Steam 音樂資料夾功能")
+    return
 
 
 
@@ -817,10 +809,7 @@ async def resume(ctx):
 
 @bot.command()
 async def scan(ctx):
-    music = scan_music_files(directory_to_scan)
-    music += scan_music_files(directory_steam)
-    save_json(music)
-    await ctx.send(f"在目標資料夾尋找到{len(music)}首歌曲")
+    await ctx.send("已停用本地音樂資料夾掃描功能")
 
 
 @bot.command()
