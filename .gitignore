@@ -2,3 +2,4 @@ pwd
 .vscode
 .DS_Store
 swiss.db
+.venv/
