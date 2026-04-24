@@ -149,22 +149,24 @@ class ForgetMusic(commands.Cog):
         vc.stop()
         await self.start_playback(ctx, vc)
 
+    async def extract_playlist_entries(self, url: str):
+        def _extract_playlist():
+            with yt_dlp.YoutubeDL(ytdl_list_format_options) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        info = await asyncio.to_thread(_extract_playlist)
+        entries = [i for i in info.get("entries", []) if i]
+        return info, [[1, item["url"]] for item in entries if item.get("url")]
+
     async def queue_youtube(self, ctx, vc_state, url: str):
         vc_state["list"].append([1, url])
         if "youtube.com/playlist?list=" in url:
             vc_state["list"].remove([1, url])
-
-            def _extract_playlist():
-                with yt_dlp.YoutubeDL(ytdl_list_format_options) as ydl:
-                    return ydl.extract_info(url, download=False)
-
-            info = await asyncio.to_thread(_extract_playlist)
+            info, entries = await self.extract_playlist_entries(url)
             await ctx.send(f"新增 {info['title']} 至播放清單")
-            entries = [i for i in info.get("entries", []) if i]
             if vc_state["random"]:
                 random.shuffle(entries)
-            for item in entries:
-                vc_state["list"].append([1, item["url"]])
+            vc_state["list"].extend(entries)
 
     @commands.command()
     async def join(self, ctx):
@@ -298,6 +300,67 @@ class ForgetMusic(commands.Cog):
     @commands.command()
     async def thpynno(self, ctx):
         await self.play(ctx, "y", "https://www.youtube.com/watch?v=xAjvjVd6Xnk")
+
+    @commands.command(name="list")
+    async def playlist_command(self, ctx, command=None, name: str = None, url: str = None):
+        if command in ("list", "ls"):
+            await self.list_saved_playlists(ctx)
+            return
+        if command in ("play", "p"):
+            await self.play_saved_playlist(ctx, name)
+            return
+        if command in ("create", "c"):
+            await self.create_saved_playlist(ctx, name, url)
+            return
+        await ctx.send("輸入錯誤")
+
+    async def get_user_music_lists(self, user_id: int):
+        music_list = self.state.data.setdefault("music_list", {})
+        return music_list.setdefault(str(user_id), {})
+
+    async def create_saved_playlist(self, ctx, name: str, url: str):
+        if not name or not url:
+            await ctx.send("輸入錯誤")
+            return
+        if "youtube.com/playlist?list=" not in url:
+            await ctx.send("只支援 YouTube 播放清單")
+            return
+        try:
+            info, entries = await self.extract_playlist_entries(url)
+        except Exception:
+            await ctx.send("發生錯誤,也有可能是你沒有把歌單設定成非公開或公開")
+            return
+        playlists = await self.get_user_music_lists(ctx.author.id)
+        playlists[name] = entries
+        await self.state.save_data()
+        await ctx.send(f"創建播放清單完成: {info['title']}")
+
+    async def play_saved_playlist(self, ctx, name: str):
+        if not name:
+            await ctx.send("輸入錯誤")
+            return
+        playlists = await self.get_user_music_lists(ctx.author.id)
+        items = playlists.get(name)
+        if not items:
+            await ctx.send("輸入錯誤")
+            return
+        state = await self.ensure_joined(ctx)
+        if not state:
+            return
+        state["list"].extend(items)
+        await ctx.send(f"已加入播放清單 `{name}`")
+        if state["song"] == 0:
+            await self.start_playback(ctx, state["vc"])
+
+    async def list_saved_playlists(self, ctx):
+        playlists = await self.get_user_music_lists(ctx.author.id)
+        if not playlists:
+            await ctx.send("這是您的列表\n(空)")
+            return
+        out = "這是您的列表"
+        for key in playlists:
+            out += f"\n{key}"
+        await ctx.send(out)
 
 
 async def setup(bot: commands.Bot):
