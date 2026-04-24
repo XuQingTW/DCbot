@@ -57,6 +57,14 @@ class RuntimeState:
     def _ensure_defaults(self):
         if not isinstance(self.data, dict):
             self.data = {}
+
+        migrated_user_setting = {}
+        for key, value in list(self.data.items()):
+            if key.isdigit() and isinstance(value, dict):
+                if any(field in value for field in ("sound", "loop", "shuffle")):
+                    migrated_user_setting[key] = value
+                    del self.data[key]
+
         for key, value in DEFAULT_DATA.items():
             if key not in self.data or not isinstance(self.data[key], type(value)):
                 if isinstance(value, dict):
@@ -65,6 +73,9 @@ class RuntimeState:
                     self.data[key] = list(value)
                 else:
                     self.data[key] = value
+
+        if migrated_user_setting:
+            self.data["user_setting"].update(migrated_user_setting)
 
     async def save_data(self):
         async with aiofiles.open(self.data_path, "w", encoding="utf-8") as f:

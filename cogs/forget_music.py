@@ -52,6 +52,9 @@ class ForgetMusic(commands.Cog):
     def get_ffmpeg_options(self, volume: float):
         return f'-vn -filter:a "volume={volume}"'
 
+    def get_user_settings(self, user_id: int):
+        return self.state.data.setdefault("user_setting", {}).setdefault(str(user_id), {})
+
     def clean_song_url(self, song):
         if song[0] == 1 and "&list=" in song[1]:
             song = [song[0], song[1].split("&list=")[0]]
@@ -66,6 +69,13 @@ class ForgetMusic(commands.Cog):
         if state is None:
             vc = await voice_channel.connect()
             state = self.state.ensure_voice_state(ctx.guild.id, vc)
+            user_settings = self.get_user_settings(ctx.author.id)
+            if isinstance(user_settings.get("sound"), (int, float)):
+                state["sound"] = float(user_settings["sound"])
+            if isinstance(user_settings.get("loop"), bool):
+                state["loop"] = user_settings["loop"]
+            if isinstance(user_settings.get("shuffle"), bool):
+                state["random"] = user_settings["shuffle"]
             await ctx.send(f"Joined {voice_channel.name}")
         return state
 
@@ -202,9 +212,13 @@ class ForgetMusic(commands.Cog):
         if mod in ("random", "r"):
             if arg == "on":
                 state["random"] = True
+                self.get_user_settings(ctx.author.id)["shuffle"] = True
+                await self.state.save_data()
                 await ctx.send("已開啟隨機播放")
             elif arg == "off":
                 state["random"] = False
+                self.get_user_settings(ctx.author.id)["shuffle"] = False
+                await self.state.save_data()
                 await ctx.send("已關閉隨機播放")
             else:
                 await ctx.send("輸入錯誤(on or off)")
@@ -213,9 +227,13 @@ class ForgetMusic(commands.Cog):
         if mod in ("loop", "l"):
             if arg == "on":
                 state["loop"] = True
+                self.get_user_settings(ctx.author.id)["loop"] = True
+                await self.state.save_data()
                 await ctx.send("已開啟重複播放")
             elif arg == "off":
                 state["loop"] = False
+                self.get_user_settings(ctx.author.id)["loop"] = False
+                await self.state.save_data()
                 await ctx.send("已關閉重複播放")
             else:
                 await ctx.send("輸入錯誤(on or off)")
