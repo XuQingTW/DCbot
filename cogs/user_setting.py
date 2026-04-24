@@ -5,15 +5,20 @@ import json
 import aiofiles
 import os
 
-# 非同步讀取 data.json，如果檔案不存在或內容為空，回傳空字典
+# 非同步讀取 data.json，如果檔案不存在或內容為空，回傳帶預設結構的字典
 async def read_data():
-    if not os.path.exists("data.json"):
-        return {}
-    async with aiofiles.open("data.json", "r") as f:
-        content = await f.read()
-        if not content:
-            return {}
-        return json.loads(content)
+    data = {}
+    if os.path.exists("data.json"):
+        async with aiofiles.open("data.json", "r") as f:
+            content = await f.read()
+            if content:
+                data = json.loads(content)
+
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get("user_setting"), dict):
+        data["user_setting"] = {}
+    return data
 
 # 非同步寫入 data.json
 async def write_data(data):
@@ -31,7 +36,7 @@ class UserSetting(app_commands.Group):
     async def sound(self, interaction: discord.Interaction, value: float = 0.05):
         data = await read_data()
         user_id = str(interaction.user.id)
-        if user_id not in data:
+        if user_id not in data["user_setting"]:
             data["user_setting"][user_id] = {}
         data["user_setting"][user_id]["sound"] = value
         await write_data(data)
@@ -50,8 +55,8 @@ class UserSetting(app_commands.Group):
             return
         status = True if value.lower() == "on" else False
         user_id = str(interaction.user.id)
-        if user_id not in data:
-            data[user_id] = {}
+        if user_id not in data["user_setting"]:
+            data["user_setting"][user_id] = {}
         data["user_setting"][user_id]["loop"] = status
         await write_data(data)
         await interaction.response.send_message(
@@ -69,8 +74,8 @@ class UserSetting(app_commands.Group):
             return
         status = True if value.lower() == "on" else False
         user_id = str(interaction.user.id)
-        if user_id not in data['user_setting']:
-            data['user_setting'][user_id] = {}
+        if user_id not in data["user_setting"]:
+            data["user_setting"][user_id] = {}
         data["user_setting"][user_id]["shuffle"] = status
         await write_data(data)
         await interaction.response.send_message(
