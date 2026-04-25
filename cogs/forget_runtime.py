@@ -1,5 +1,6 @@
 import json
 import os
+import traceback
 from typing import Any, Dict
 
 import aiofiles
@@ -26,6 +27,7 @@ class RuntimeState:
         self.data_path = os.path.join(self.base_dir, "data.json")
         self.music_path = os.path.join(self.base_dir, "music.json")
         self.pwd_path = os.path.join(self.base_dir, "pwd")
+        self.debug_log_path = os.path.join(self.base_dir, "debug.log")
         self.data: Dict[str, Any] = {}
         self.music_catalog = []
         self.passwords: Dict[str, Any] = {}
@@ -80,6 +82,14 @@ class RuntimeState:
     async def save_data(self):
         async with aiofiles.open(self.data_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(self.data, ensure_ascii=False, indent=2))
+
+    async def append_debug_log(self, message: str):
+        async with aiofiles.open(self.debug_log_path, "a", encoding="utf-8") as f:
+            await f.write(message.rstrip() + "\n")
+
+    async def log_exception(self, where: str, error: Exception):
+        stack = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        await self.append_debug_log(f"[{where}]\n{stack}")
 
     def get_voice_state(self, guild_id: int):
         return self.voice_clients.get(guild_id)

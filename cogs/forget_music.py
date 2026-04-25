@@ -97,15 +97,20 @@ class ForgetMusic(commands.Cog):
             with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
                 return ydl.extract_info(song[1], download=False)
 
-        info = await asyncio.to_thread(_extract)
-        song_name = info["title"]
-        song_url = info["url"]
-        loop = asyncio.get_running_loop()
-        vc.play(
-            FFmpegPCMAudio(song_url, **ffmpeg_options),
-            after=lambda e: loop.create_task(self.next_song(ctx, vc)),
-        )
-        return song_name
+        try:
+            info = await asyncio.to_thread(_extract)
+            song_name = info["title"]
+            song_url = info["url"]
+            loop = asyncio.get_running_loop()
+            vc.play(
+                FFmpegPCMAudio(song_url, **ffmpeg_options),
+                after=lambda e: loop.create_task(self.next_song(ctx, vc)),
+            )
+            return song_name
+        except Exception as e:
+            await self.state.log_exception("play_online_song", e)
+            await ctx.send("無法播放該歌曲")
+            return None
 
     async def play_local_song(self, ctx, vc, song, ffmpeg_options):
         song_path = song[1]
@@ -145,7 +150,8 @@ class ForgetMusic(commands.Cog):
                     "options": ffmpeg_base_options,
                 },
             )
-        await ctx.send(f"Now playing: {song_name}")
+        if song_name:
+            await ctx.send(f"Now playing: {song_name}")
 
     async def next_song(self, ctx, vc, force_skip=False):
         vc_state = self.state.get_voice_state(ctx.guild.id)
@@ -345,7 +351,8 @@ class ForgetMusic(commands.Cog):
             return
         try:
             info, entries = await self.extract_playlist_entries(url)
-        except Exception:
+        except Exception as e:
+            await self.state.log_exception("create_saved_playlist", e)
             await ctx.send("發生錯誤,也有可能是你沒有把歌單設定成非公開或公開")
             return
         playlists = await self.get_user_music_lists(ctx.author.id)

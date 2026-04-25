@@ -67,6 +67,7 @@ class ForgetSystem(commands.Cog):
                     break
                 except Exception as e:
                     print(f"Error fetching earthquake data: {e}")
+                    await self.state.log_exception("warning_loop", e)
                     await asyncio.sleep(min(backoff, 60))
                     backoff = min(backoff * 2, 60)
                     continue
@@ -81,13 +82,16 @@ class ForgetSystem(commands.Cog):
         await self.bot.tree.sync()
         if self.warning_task is None or self.warning_task.done():
             self.warning_task = asyncio.create_task(self.warning_loop())
+        loaded = ", ".join(sorted(self.bot.extensions.keys()))
+        await self.state.append_debug_log(f"[startup] loaded_extensions={loaded}")
         print("準備完成")
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
             return
-        raise error
+        await self.state.log_exception(f"command:{getattr(ctx.command, 'qualified_name', 'unknown')}", error)
+        await ctx.send(f"發生錯誤: {type(error).__name__}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
