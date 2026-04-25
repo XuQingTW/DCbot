@@ -1,1 +1,7 @@
-[selftest] runtime ok
+[extension] loaded=flash_command
+[extension] loaded=forget_music
+[extension] loaded=forget_system
+[extension] loaded=PRTS_command
+[extension] loaded=user_setting
+[extension] skipped=swiss reason=No module named 'aiosqlite'
+[extension] skipped=swiss_extras reason=No module named 'aiosqlite'

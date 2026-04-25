@@ -20,6 +20,8 @@ async def load_extensions():
     for name in runtime_first:
         await bot.load_extension(f"cogs.{name}")
 
+    loaded = []
+    skipped = []
     for filename in os.listdir("./cogs"):
         if not filename.endswith(".py"):
             continue
@@ -28,12 +30,19 @@ async def load_extensions():
             continue
         try:
             await bot.load_extension(f"cogs.{module}")
-            print(f"已載入 {module} 指令")
+            loaded.append(module)
         except commands.ExtensionFailed as e:
             if isinstance(e.original, ModuleNotFoundError):
-                print(f"跳過 {module}，缺少依賴: {e.original}")
+                skipped.append((module, str(e.original)))
                 continue
             raise
+
+    runtime = getattr(bot, "runtime_state", None)
+    if runtime is not None:
+        for module in loaded:
+            await runtime.append_debug_log(f"[extension] loaded={module}")
+        for module, reason in skipped:
+            await runtime.append_debug_log(f"[extension] skipped={module} reason={reason}")
 
 
 async def main():

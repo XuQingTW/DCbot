@@ -66,7 +66,6 @@ class ForgetSystem(commands.Cog):
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    print(f"Error fetching earthquake data: {e}")
                     await self.state.log_exception("warning_loop", e)
                     await asyncio.sleep(min(backoff, 60))
                     backoff = min(backoff * 2, 60)
@@ -76,15 +75,14 @@ class ForgetSystem(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print("目前登入身份：", self.bot.user)
         game = discord.Game("二分之一的自殺 今日 反面")
         await self.bot.change_presence(status=discord.Status.online, activity=game)
         await self.bot.tree.sync()
         if self.warning_task is None or self.warning_task.done():
             self.warning_task = asyncio.create_task(self.warning_loop())
         loaded = ", ".join(sorted(self.bot.extensions.keys()))
+        await self.state.append_debug_log(f"[startup] bot_user={self.bot.user}")
         await self.state.append_debug_log(f"[startup] loaded_extensions={loaded}")
-        print("準備完成")
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
@@ -158,10 +156,8 @@ class ForgetSystem(commands.Cog):
             return
 
         if msg == "restart":
-            await ctx.send("三秒後開始嘗試執行")
-            os.system("shutdown -r -t 3")
-            await asyncio.sleep(3)
-            await ctx.send("開始重啟")
+            await ctx.send("這個重啟指令目前已停用")
+            await self.state.append_debug_log("[owner] restart requested but disabled")
             return
 
         if msg == "nh":
