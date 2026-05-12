@@ -9,7 +9,8 @@ from discord.ext import commands
 JSON_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/E-A0015-001?Authorization=CWB-07D30AE2-5882-4240-9A5A-372F3F3EA24B&limit=1&offset=0&format=JSON"
 WARNING_CHANNEL_ID = 1224902159200686110
 OWNER_ID = 649969607406387200
-
+CLEANUP_ROLE_ID = 1498971250138021960
+CLEANUP_KICK_REASON = "大掃除期間沒有解除大掃除身分組"
 
 class ForgetSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -118,11 +119,12 @@ class ForgetSystem(commands.Cog):
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
             return
+        member = guild.get_member(payload.user_id)
+
         mapping = self.state.data["role"].get(str(payload.message_id), {})
         role_id = mapping.get(str(payload.emoji))
         if not role_id:
             return
-        member = guild.get_member(payload.user_id)
         role = guild.get_role(role_id)
         if member and role:
             await member.add_roles(role)
@@ -192,6 +194,56 @@ class ForgetSystem(commands.Cog):
             self.state.data["role"].pop(message_id, None)
             await self.state.save_data()
             await ctx.send("done")
+
+    @commands.command(name="clear")
+    async def clear_cleanup_role(self, ctx):
+        if ctx.author.id != OWNER_ID:
+            await ctx.send("沒有權限")
+            return
+        if ctx.guild is None:
+            await ctx.send("這個指令只能在伺服器裡使用")
+            return
+
+        role = ctx.guild.get_role(CLEANUP_ROLE_ID)
+        if role is None:
+            await ctx.send("找不到大掃除身分組")
+            return
+
+        bot_member = ctx.guild.me or ctx.guild.get_member(self.bot.user.id)
+        if bot_member is None:
+            await ctx.send("找不到 bot 自己的成員資料")
+            return
+        if not bot_member.guild_permissions.kick_members:
+            await ctx.send("失敗：bot 沒有「踢出成員」權限")
+            return
+
+        kicked = 0
+        failed = 0
+        hierarchy_blocked = 0
+        owner_blocked = 0
+        targets = list(role.members)
+        await ctx.send(f"開始大掃除，目標 {len(targets)} 人")
+        for member in targets:
+            if member == ctx.guild.owner:
+                owner_blocked += 1
+                continue
+            if member.top_role >= bot_member.top_role:
+                hierarchy_blocked += 1
+                continue
+            try:
+                await member.kick(reason=CLEANUP_KICK_REASON)
+                kicked += 1
+            except discord.Forbidden as e:
+                failed += 1
+                await self.state.log_exception(f"clear:kick_forbidden:{member.id}", e)
+            except Exception as e:
+                failed += 1
+                await self.state.log_exception(f"clear:kick:{member.id}", e)
+
+        await ctx.send(
+            f"大掃除完成：踢出 {kicked} 人，失敗 {failed} 人，"
+            f"身分組位階不足略過 {hierarchy_blocked} 人，伺服器擁有者略過 {owner_blocked} 人"
+        )
 
     @commands.command()
     async def ban(self, ctx):
